@@ -1,8 +1,8 @@
-
 #pragma once
 
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
+#include <memory>
 
 class MIDIImagePlayerAudioProcessorEditor
     : public juce::AudioProcessorEditor,
@@ -24,6 +24,8 @@ private:
     void refreshPreview();
 
     MIDIImagePlayerAudioProcessor& processor;
+
+    std::unique_ptr<juce::FileChooser> fileChooser;
 
     std::array<juce::TextButton, 12> loadButtons;
     std::array<juce::Label, 12> noteLabels;
