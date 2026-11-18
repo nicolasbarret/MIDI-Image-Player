@@ -1,0 +1,30 @@
+
+name: Build MIDI Image Player VST3
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Compile Windows VST3
+    runs-on: windows-2022
+
+    steps:
+      - name: Download project
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -S . -B build -A x64
+
+      - name: Compile VST3
+        run: cmake --build build --config Release
+
+      - name: Upload VST3 plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: MIDI-Image-Player-VST3-Windows-x64
+          path: build/MIDI_Image_Player_artefacts/Release/VST3/
+          if-no-files-found: error
