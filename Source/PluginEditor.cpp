@@ -1,4 +1,3 @@
-
 #include "PluginEditor.h"
 
 static const char* noteNames[12] =
@@ -96,21 +95,30 @@ void MIDIImagePlayerAudioProcessorEditor::resized()
 void MIDIImagePlayerAudioProcessorEditor::loadImage(
     int index)
 {
-    juce::FileChooser chooser(
+    fileChooser = std::make_unique<juce::FileChooser>(
         "Choisir une image",
         juce::File(),
         "*.png;*.jpg;*.jpeg"
     );
 
-    if (chooser.browseForFileToOpen())
-    {
-        auto file = chooser.getResult();
+    fileChooser->launchAsync(
+        juce::FileBrowserComponent::openMode
+            | juce::FileBrowserComponent::canSelectFiles,
+        [this, index](const juce::FileChooser& chooser)
+        {
+            const auto file = chooser.getResult();
 
-        processor.setImagePath(index, file);
+            if (file.existsAsFile())
+            {
+                processor.setImagePath(index, file);
 
-        if (processor.getActivePitchClass() == index)
-            refreshPreview();
-    }
+                if (processor.getActivePitchClass() == index)
+                    refreshPreview();
+            }
+
+            fileChooser.reset();
+        }
+    );
 }
 
 void MIDIImagePlayerAudioProcessorEditor::refreshPreview()
