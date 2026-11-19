@@ -28,9 +28,6 @@ MIDIImagePlayerAudioProcessorEditor::MIDIImagePlayerAudioProcessorEditor(
         addAndMakeVisible(button);
     }
 
-    preview.setOpaque(true);
-    preview.setColour(juce::ImageComponent::backgroundColourId,
-                      juce::Colour(0xff080808));
     addAndMakeVisible(preview);
 
     startTimerHz(30);
