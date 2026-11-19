@@ -1,30 +1,42 @@
-
 name: Build MIDI Image Player VST3
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - rebuild-clean
+
+permissions:
+  contents: read
 
 jobs:
-  build:
-    name: Compile Windows VST3
+  build-windows:
+    name: Build Windows 64-bit VST3
     runs-on: windows-2022
-
     steps:
-      - name: Download project
+      - name: Checkout clean rebuild branch
         uses: actions/checkout@v4
 
-      - name: Configure CMake
+      - name: Configure x64 build
         run: cmake -S . -B build -A x64
 
-      - name: Compile VST3
-        run: cmake --build build --config Release
+      - name: Compile Release VST3
+        run: cmake --build build --config Release --parallel
 
-      - name: Upload VST3 plugin
+      - name: Verify VST3 bundle exists
+        shell: pwsh
+        run: |
+          $plugin = "build/MIDI_Image_Player_artefacts/Release/VST3/MIDI Image Player.vst3"
+          if (!(Test-Path $plugin)) {
+            Write-Error "VST3 bundle not found at: $plugin"
+            Get-ChildItem -Recurse build/MIDI_Image_Player_artefacts
+            exit 1
+          }
+          Get-ChildItem -Recurse $plugin
+
+      - name: Upload VST3 bundle
         uses: actions/upload-artifact@v4
         with:
-          name: MIDI-Image-Player-VST3-Windows-x64
-          path: build/MIDI_Image_Player_artefacts/Release/VST3/
+          name: MIDI-Image-Player-CLEAN-VST3-Windows-x64
+          path: build/MIDI_Image_Player_artefacts/Release/VST3/MIDI Image Player.vst3
           if-no-files-found: error

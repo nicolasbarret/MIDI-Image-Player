@@ -1,165 +1,129 @@
 #include "PluginEditor.h"
 
-static const char* noteNames[12] =
+namespace
 {
-    "Do", "Do#", "Ré", "Ré#", "Mi", "Fa",
-    "Fa#", "Sol", "Sol#", "La", "La#", "Si"
-};
+    constexpr const char* noteNames[12] = {
+        "Do", "Do#", "Ré", "Ré#", "Mi", "Fa",
+        "Fa#", "Sol", "Sol#", "La", "La#", "Si"
+    };
+}
 
-MIDIImagePlayerAudioProcessorEditor::
-MIDIImagePlayerAudioProcessorEditor(
-    MIDIImagePlayerAudioProcessor& p)
-    : AudioProcessorEditor(&p),
-      processor(p)
+MIDIImagePlayerAudioProcessorEditor::MIDIImagePlayerAudioProcessorEditor(
+    MIDIImagePlayerAudioProcessor& processorToUse)
+    : AudioProcessorEditor(&processorToUse),
+      processor(processorToUse)
 {
     setSize(760, 470);
 
     for (int i = 0; i < 12; ++i)
     {
-        noteLabels[(size_t)i].setText(
-            noteNames[i],
-            juce::dontSendNotification
-        );
+        auto& label = noteLabels[static_cast<size_t>(i)];
+        label.setText(noteNames[i], juce::dontSendNotification);
+        label.setColour(juce::Label::textColourId, juce::Colours::white);
+        addAndMakeVisible(label);
 
-        noteLabels[(size_t)i].setColour(
-            juce::Label::textColourId,
-            juce::Colours::white
-        );
-
-        addAndMakeVisible(noteLabels[(size_t)i]);
-
-        loadButtons[(size_t)i].setButtonText(
-            "Charger..."
-        );
-
-        loadButtons[(size_t)i].onClick =
-            [this, i]
-            {
-                loadImage(i);
-            };
-
-        addAndMakeVisible(loadButtons[(size_t)i]);
+        auto& button = loadButtons[static_cast<size_t>(i)];
+        button.setButtonText("Charger...");
+        button.onClick = [this, i] { loadImage(i); };
+        addAndMakeVisible(button);
     }
 
+    preview.setOpaque(true);
+    preview.setColour(juce::ImageComponent::backgroundColourId,
+                      juce::Colour(0xff080808));
     addAndMakeVisible(preview);
 
     startTimerHz(30);
 }
 
-void MIDIImagePlayerAudioProcessorEditor::paint(
-    juce::Graphics& g)
+void MIDIImagePlayerAudioProcessorEditor::paint(juce::Graphics& graphics)
 {
-    g.fillAll(juce::Colour(0xff101010));
+    graphics.fillAll(juce::Colour(0xff101010));
 
-    g.setColour(juce::Colours::white);
-    g.setFont(18.0f);
+    graphics.setColour(juce::Colours::white);
+    graphics.setFont(18.0f);
+    graphics.drawText("MIDI Image Player", 18, 10, 300, 28,
+                      juce::Justification::left);
 
-    g.drawText(
-        "MIDI Image Player",
-        18, 10, 300, 28,
-        juce::Justification::left
-    );
-
-    g.setColour(juce::Colour(0xff454545));
-
-    g.drawRect(
-        preview.getBounds().toFloat(),
-        1.0f
-    );
+    graphics.setColour(juce::Colour(0xff454545));
+    graphics.drawRect(preview.getBounds().toFloat(), 1.0f);
 }
 
 void MIDIImagePlayerAudioProcessorEditor::resized()
 {
     auto area = getLocalBounds().reduced(18);
-
     area.removeFromTop(42);
 
     auto left = area.removeFromLeft(230);
-
     for (int i = 0; i < 12; ++i)
     {
         auto line = left.removeFromTop(30);
-
-        noteLabels[(size_t)i].setBounds(
-            line.removeFromLeft(62)
-        );
-
-        loadButtons[(size_t)i].setBounds(
-            line.removeFromLeft(145).reduced(2)
-        );
+        noteLabels[static_cast<size_t>(i)].setBounds(line.removeFromLeft(62));
+        loadButtons[static_cast<size_t>(i)].setBounds(
+            line.removeFromLeft(145).reduced(2));
     }
 
     preview.setBounds(area.reduced(8));
 }
 
-void MIDIImagePlayerAudioProcessorEditor::loadImage(
-    int index)
+void MIDIImagePlayerAudioProcessorEditor::loadImage(int pitchClass)
 {
+    if (fileChooser != nullptr)
+        return;
+
     fileChooser = std::make_unique<juce::FileChooser>(
-        "Choisir une image",
+        "Choisir une image PNG ou JPEG",
         juce::File(),
-        "*.png;*.jpg;*.jpeg"
-    );
+        "*.png;*.jpg;*.jpeg");
+
+    juce::Component::SafePointer<MIDIImagePlayerAudioProcessorEditor> safeThis(this);
 
     fileChooser->launchAsync(
         juce::FileBrowserComponent::openMode
             | juce::FileBrowserComponent::canSelectFiles,
-        [this, index](const juce::FileChooser& chooser)
+        [safeThis, pitchClass](const juce::FileChooser& chooser)
         {
-            const auto file = chooser.getResult();
+            if (safeThis == nullptr)
+                return;
 
+            const auto file = chooser.getResult();
             if (file.existsAsFile())
             {
-                processor.setImagePath(index, file);
-
-                if (processor.getActivePitchClass() == index)
-                    refreshPreview();
+                safeThis->processor.setImagePath(pitchClass, file);
+                if (safeThis->processor.getActivePitchClass() == pitchClass)
+                    safeThis->refreshPreview();
             }
 
-            fileChooser.reset();
-        }
-    );
+            safeThis->fileChooser.reset();
+        });
 }
 
 void MIDIImagePlayerAudioProcessorEditor::refreshPreview()
 {
-    const int pc = processor.getActivePitchClass();
+    displayedPitchClass = processor.getActivePitchClass();
 
-    displayedPitchClass = pc;
-
-    if (pc < 0)
+    if (displayedPitchClass < 0)
     {
-        currentImage = juce::Image();
         preview.setImage(juce::Image());
         return;
     }
 
-    const auto path = processor.getImagePath(pc);
-
-    if (path.isNotEmpty())
+    const auto path = processor.getImagePath(displayedPitchClass);
+    if (path.isEmpty())
     {
-        currentImage =
-            juce::ImageFileFormat::loadFrom(
-                juce::File(path)
-            );
-
-        preview.setImage(
-            currentImage,
-            juce::RectanglePlacement::centred
-            | juce::RectanglePlacement::onlyReduceInSize
-        );
-    }
-    else
-    {
-        currentImage = juce::Image();
         preview.setImage(juce::Image());
+        return;
     }
+
+    // Image decoding happens on the message thread, never in processBlock().
+    const auto image = juce::ImageFileFormat::loadFrom(juce::File(path));
+    preview.setImage(image,
+        juce::RectanglePlacement::centred
+            | juce::RectanglePlacement::onlyReduceInSize);
 }
 
 void MIDIImagePlayerAudioProcessorEditor::timerCallback()
 {
-    const int pc = processor.getActivePitchClass();
-
-    if (pc != displayedPitchClass)
+    if (processor.getActivePitchClass() != displayedPitchClass)
         refreshPreview();
 }
