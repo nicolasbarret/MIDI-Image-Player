@@ -138,7 +138,7 @@ public:MainWindow():DocumentWindow("MIDI Image Player",juce::Colour(0xff202329),
 };
 class App final:public juce::JUCEApplication {
 public:const juce::String getApplicationName()override{return "MIDI Image Player";}const juce::String getApplicationVersion()override{return "1.0.0";}bool moreThanOneInstanceAllowed()override{return false;}
- void initialise(const juce::String&)override{writeStartupLog("Application: initialise");window=std::make_unique<MainWindow>();writeStartupLog("Application: fenêtre principale prête");}void shutdown()override{writeStartupLog("Application: shutdown");window.reset();}
+ void initialise(const juce::String&)override{writeStartupLog("Application: initialise");window=std::make_unique<MainWindow>();writeStartupLog("Application: fenêtre construite");window->setVisible(true);window->toFront(true);writeStartupLog("Application: fenêtre affichée");}void shutdown()override{writeStartupLog("Application: shutdown");window.reset();}
  void unhandledException(const std::exception* e,const juce::String& source,int line) override {writeStartupLog("Exception: "+(e?juce::String(e->what()):juce::String("inconnue"))+" | "+source+" | ligne "+juce::String(line));}
 private:std::unique_ptr<MainWindow> window;
 };
