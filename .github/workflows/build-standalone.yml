@@ -1,4 +1,5 @@
 name: Build MIDI Video Player for Windows
+# Rebuild after correcting the JUCE video playback API
 on:
   push:
     branches: [video-midi-player]
