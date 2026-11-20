@@ -1,145 +1,212 @@
 #include <JuceHeader.h>
 #include <array>
+#include <vector>
 #include <memory>
+#include <algorithm>
 #include <cmath>
 
 namespace {
-void writeStartupLog(const juce::String& message) {
- auto logFile = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("MIDI Image Player startup.log");
- logFile.appendText(juce::Time::getCurrentTime().toString(true, true) + " | " + message + "\r\n");
+const std::array<const char*,12> notes{"Do","Do#","Ré","Ré#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"};
+struct VideoState {
+    juce::CriticalSection lock;
+    juce::File file;
+    std::array<std::vector<double>,12> markers;
+    double duration=0.0, playhead=0.0, fadeSeconds=0.6;
+    int pitch=-1;
+    bool held=false, freezeOnRelease=true;
+    double releaseMs=0.0;
+    juce::uint64 triggerSerial=0;
+};
+static juce::String markerString(const std::vector<double>& v) {
+    juce::StringArray a; for(double x:v) a.add(juce::String(x,6)); return a.joinIntoString(",");
 }
-const std::array<const char*,12> noteNames{"Do","Do#","Ré","Ré#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"};
-struct State {
- juce::CriticalSection lock;
- std::array<juce::File,12> images;
- int pitch=-1, activeNote=-1;
- bool held=false;
- double fadeStart=0.0, fadeSeconds=0.5;
-};
+static std::vector<double> parseMarkers(const juce::String& s) {
+    std::vector<double> v; juce::StringArray a; a.addTokens(s,",",""); a.trim(); a.removeEmptyStrings();
+    for(auto& x:a) { double d=x.getDoubleValue(); if(d>=0.0) v.push_back(d); }
+    std::sort(v.begin(),v.end()); return v;
+}
 
-class Router final : private juce::MidiInputCallback {
+class MidiRouter final : private juce::MidiInputCallback {
 public:
- explicit Router(std::shared_ptr<State> s):state(std::move(s)){}
- ~Router() override { stop(); output.reset(); }
- juce::Array<juce::MidiDeviceInfo> inputs() const { return juce::MidiInput::getAvailableDevices(); }
- juce::Array<juce::MidiDeviceInfo> outputs() const { return juce::MidiOutput::getAvailableDevices(); }
- void openInput(const juce::String& id){ stop(); if(id.isNotEmpty()){input=juce::MidiInput::openDevice(id,this); if(input) input->start();}}
- void openOutput(const juce::String& id){output.reset(); if(id.isNotEmpty()) output=juce::MidiOutput::openDevice(id);}
+    explicit MidiRouter(std::shared_ptr<VideoState> s):state(std::move(s)){}
+    ~MidiRouter() override { if(input) input->stop(); input.reset(); output.reset(); }
+    juce::Array<juce::MidiDeviceInfo> inputs() const { return juce::MidiInput::getAvailableDevices(); }
+    juce::Array<juce::MidiDeviceInfo> outputs() const { return juce::MidiOutput::getAvailableDevices(); }
+    void openInput(const juce::String& id) { if(input) input->stop(); input.reset(); if(id.isNotEmpty()){input=juce::MidiInput::openDevice(id,this);if(input)input->start();} }
+    void openOutput(const juce::String& id) { output.reset(); if(id.isNotEmpty())output=juce::MidiOutput::openDevice(id); }
 private:
- void stop(){if(input){input->stop();input.reset();}}
- void handleIncomingMidiMessage(juce::MidiInput*,const juce::MidiMessage& m) override {
-  if(output) output->sendMessageNow(m);
-  const juce::ScopedLock sl(state->lock);
-  if(m.isNoteOn()){state->pitch=m.getNoteNumber()%12;state->activeNote=m.getNoteNumber();state->held=true;state->fadeStart=0;}
-  else if(m.isNoteOff() && m.getNoteNumber()==state->activeNote){state->held=false;state->fadeStart=juce::Time::getMillisecondCounterHiRes();}
- }
- std::shared_ptr<State> state;
- std::unique_ptr<juce::MidiInput> input;
- std::unique_ptr<juce::MidiOutput> output;
+    void handleIncomingMidiMessage(juce::MidiInput*,const juce::MidiMessage& m) override {
+        if(output) output->sendMessageNow(m);
+        const juce::ScopedLock sl(state->lock);
+        if(m.isNoteOn()) {
+            int p=m.getNoteNumber()%12; auto& list=state->markers[(size_t)p];
+            if(!list.empty()) {
+                double chosen=list.front(), best=std::abs(chosen-state->playhead);
+                for(double t:list){double d=std::abs(t-state->playhead);if(d<best){best=d;chosen=t;}}
+                state->pitch=p; state->held=true; state->releaseMs=0.0; ++state->triggerSerial;
+                state->playhead=chosen;
+            }
+        } else if(m.isNoteOff() && state->pitch==m.getNoteNumber()%12) {
+            state->held=false; state->releaseMs=juce::Time::getMillisecondCounterHiRes();
+        }
+    }
+    std::shared_ptr<VideoState> state;
+    std::unique_ptr<juce::MidiInput> input;
+    std::unique_ptr<juce::MidiOutput> output;
 };
 
-class OutputView final:public juce::Component,private juce::Timer {
+class MarkerTimeline final : public juce::Component {
 public:
- explicit OutputView(std::shared_ptr<State> s):state(std::move(s)){setOpaque(true);startTimerHz(60);}
- void paint(juce::Graphics& g) override {
-  g.fillAll(juce::Colours::black);
-  if(image.isNull()||alpha<=0.001f)return;
-  auto area=getLocalBounds().toFloat().reduced(getWidth()*0.09f,getHeight()*0.09f);
-  const float scale=juce::jmin(area.getWidth()/float(image.getWidth()),area.getHeight()/float(image.getHeight()));
-  auto dest=juce::Rectangle<float>(image.getWidth()*scale,image.getHeight()*scale).withCentre(area.getCentre());
-  g.setOpacity(alpha);g.drawImage(image,dest);
- }
+    explicit MarkerTimeline(std::shared_ptr<VideoState> s):state(std::move(s)){setMouseCursor(juce::MouseCursor::PointingHandCursor);}
+    std::function<void()> changed;
+    void setDuration(double d){duration=juce::jmax(0.01,d);repaint();}
+    void paint(juce::Graphics& g) override {
+        g.fillAll(juce::Colour(0xff171a20));
+        auto r=getLocalBounds().toFloat(); float left=48.0f, right=12.0f, top=5.0f;
+        float trackH=(r.getHeight()-top-4.0f)/12.0f; 
+        g.setFont(12.0f);
+        for(int i=0;i<12;++i){
+            float y=top+i*trackH;
+            g.setColour(i%2?juce::Colour(0xff20252d):juce::Colour(0xff1c2128));
+            g.fillRect(left,y,r.getWidth()-left-right,trackH-1.0f);
+            g.setColour(juce::Colours::white.withAlpha(0.85f));
+            g.drawText(notes[(size_t)i],2,(int)y,42,(int)trackH,juce::Justification::centredLeft);
+            const juce::ScopedLock sl(state->lock);
+            for(double t:state->markers[(size_t)i]){
+                float x=left+(float)(juce::jlimit(0.0,duration,t)/duration)*(r.getWidth()-left-right);
+                g.setColour(juce::Colour::fromHSV((float)i/12.0f,0.72f,0.98f,1.0f));
+                juce::Path p;p.addTriangle(x,y+3,x-5,y+trackH-4,x+5,y+trackH-4);g.fillPath(p);
+                g.drawLine(x,y+trackH-5,x,y+trackH-1,1.0f);
+            }
+        }
+        g.setColour(juce::Colours::white.withAlpha(0.45f));
+        float px=left+(float)(juce::jlimit(0.0,duration,state->playhead)/duration)*(r.getWidth()-left-right);
+        g.drawLine(px,top,px,r.getHeight()-2,1.3f);
+    }
+    void mouseDown(const juce::MouseEvent& e) override {
+        auto r=getLocalBounds().toFloat(); float left=48.0f,right=12.0f,top=5.0f;
+        float th=(r.getHeight()-top-4.0f)/12.0f;
+        int row=juce::jlimit(0,11,(int)((e.position.y-top)/th));
+        float x=e.position.x; double clicked=(x-left)/juce::jmax(1.0f,r.getWidth()-left-right)*duration;
+        dragRow=row; dragIndex=-1; double best=0.45;
+        {const juce::ScopedLock sl(state->lock);auto& v=state->markers[(size_t)row];
+         for(size_t i=0;i<v.size();++i){double dx=std::abs(v[i]-clicked);if(dx<best){best=dx;dragIndex=(int)i;}}}
+        if(dragIndex>=0){dragging=true;moveMarker(clicked);} else dragging=false;
+    }
+    void mouseDrag(const juce::MouseEvent& e) override {
+        if(!dragging)return;
+        auto r=getLocalBounds().toFloat();double t=(e.position.x-48.0)/juce::jmax(1.0f,r.getWidth()-60.0f)*duration;moveMarker(t);
+    }
+    void mouseUp(const juce::MouseEvent&) override {dragging=false;if(changed)changed();}
 private:
- void timerCallback() override {
-  int p;juce::File f;float a=0;
-  {const juce::ScopedLock sl(state->lock);p=state->pitch;if(p>=0)f=state->images[(size_t)p];
-   if(p>=0){if(state->held)a=1;else{double d=state->fadeSeconds*1000.0;double e=juce::Time::getMillisecondCounterHiRes()-state->fadeStart;
-    if(d<=0||e>=d){state->pitch=-1;state->activeNote=-1;p=-1;}else a=float(juce::jlimit(0.0,1.0,1.0-e/d));}}}
-  if(p!=cachedPitch||f!=cachedFile){cachedPitch=p;cachedFile=f;image=f.existsAsFile()?juce::ImageFileFormat::loadFrom(f):juce::Image();}
-  if(std::abs(alpha-a)>0.002f||p<0){alpha=a;repaint();}
- }
- std::shared_ptr<State> state;juce::Image image;juce::File cachedFile;int cachedPitch=-2;float alpha=0;
+    void moveMarker(double t){
+        const juce::ScopedLock sl(state->lock);auto& v=state->markers[(size_t)dragRow];
+        if(dragIndex>=0&&dragIndex<(int)v.size()){v[(size_t)dragIndex]=juce::jlimit(0.0,duration,t);std::sort(v.begin(),v.end());}
+        repaint();
+    }
+    std::shared_ptr<VideoState> state;double duration=60.0;bool dragging=false;int dragRow=-1,dragIndex=-1;
 };
 
-class OutputWindow final:public juce::DocumentWindow {
+class VideoOutputView final : public juce::Component, private juce::Timer {
 public:
- explicit OutputWindow(std::shared_ptr<State> s):DocumentWindow("MIDI Image Player | Sortie OBS",juce::Colours::black,allButtons){
-  setUsingNativeTitleBar(true);setContentOwned(new OutputView(std::move(s)),true);setResizable(true,true);
-  getConstrainer()->setFixedAspectRatio(16.0/9.0);setResizeLimits(480,270,1920,1080);centreWithSize(960,540);
- }
- void closeButtonPressed() override{setVisible(false);}
-};
-
-class MainView final:public juce::Component {
-public:
- MainView():state(std::make_shared<State>()),router(state){
-  writeStartupLog("MainView: début du constructeur");
-  juce::PropertiesFile::Options o;o.applicationName="MIDI Image Player";o.filenameSuffix="settings";o.folderName="MIDI Image Player";
-  settings=std::make_unique<juce::PropertiesFile>(o);
-  for(int i=0;i<12;++i){
-   labels[(size_t)i].setText(noteNames[(size_t)i],juce::dontSendNotification);labels[(size_t)i].setColour(juce::Label::textColourId,juce::Colours::white);
-   addAndMakeVisible(labels[(size_t)i]);buttons[(size_t)i].setButtonText("Charger...");
-   buttons[(size_t)i].onClick=[this,i]{loadImage(i);};addAndMakeVisible(buttons[(size_t)i]);
-   auto path=settings->getValue("image"+juce::String(i));if(path.isNotEmpty())state->images[(size_t)i]=juce::File(path);
-  }
-  for(auto* l:{&inLabel,&outLabel,&fadeLabel}){l->setColour(juce::Label::textColourId,juce::Colours::white);addAndMakeVisible(*l);}
-  inLabel.setText("Clavier MIDI (entrée)",juce::dontSendNotification);outLabel.setText("Sortie MIDI loopMIDI",juce::dontSendNotification);fadeLabel.setText("Fondu après relâchement",juce::dontSendNotification);
-  addAndMakeVisible(inBox);addAndMakeVisible(outBox);addAndMakeVisible(refresh);addAndMakeVisible(showOutput);addAndMakeVisible(fade);
-  refresh.setButtonText("Actualiser les appareils");refresh.onClick=[this]{refreshDevices();};
-  showOutput.setButtonText("Ouvrir la fenêtre de sortie OBS");showOutput.onClick=[this]{openOutput();};
-  fade.setRange(0,5,0.05);fade.setValue(settings->getDoubleValue("fadeSeconds",0.5),juce::dontSendNotification);
-  fade.setTextBoxStyle(juce::Slider::TextBoxRight,false,70,24);fade.setTextValueSuffix(" s");
-  {const juce::ScopedLock sl(state->lock);state->fadeSeconds=fade.getValue();}
-  fade.onValueChange=[this]{{const juce::ScopedLock sl(state->lock);state->fadeSeconds=fade.getValue();}settings->setValue("fadeSeconds",fade.getValue());settings->saveIfNeeded();};
-  inBox.onChange=[this]{chooseInput();};outBox.onChange=[this]{chooseOutput();};
-  writeStartupLog("MainView: avant actualisation MIDI");
-  refreshDevices();setSize(820,620);
-  writeStartupLog("MainView: constructeur terminé");
- }
- ~MainView() override{outputWindow.reset();if(settings)settings->saveIfNeeded();}
- void paint(juce::Graphics& g) override{
-  g.fillAll(juce::Colour(0xff202329));g.setColour(juce::Colours::white);g.setFont(juce::Font(22,juce::Font::bold));
-  g.drawText("MIDI IMAGE PLAYER",24,16,getWidth()-48,32,juce::Justification::centredLeft);
-  g.setColour(juce::Colour(0xffaeb6c2));g.setFont(14);g.drawText("Charge les images, choisis les appareils MIDI, puis ouvre la sortie OBS.",24,48,getWidth()-48,24,juce::Justification::centredLeft);
- }
- void resized() override{
-  auto a=getLocalBounds().reduced(24);a.removeFromTop(82);auto d=a.removeFromTop(112);auto l=d.removeFromLeft((d.getWidth()-20)/2);
-  inLabel.setBounds(l.removeFromTop(24));inBox.setBounds(l.removeFromTop(32));d.removeFromLeft(20);outLabel.setBounds(d.removeFromTop(24));outBox.setBounds(d.removeFromTop(32));
-  refresh.setBounds(a.removeFromTop(34).withWidth(220));a.removeFromTop(10);auto s=a.removeFromTop(64);fadeLabel.setBounds(s.removeFromTop(22));fade.setBounds(s.removeFromTop(34));a.removeFromTop(8);
-  auto grid=a.removeFromTop(260);int cw=grid.getWidth()/4,ch=58;
-  for(int i=0;i<12;++i){int c=i%4,r=i/4;auto cell=juce::Rectangle<int>(grid.getX()+c*cw,grid.getY()+r*ch,cw-8,ch-6);labels[(size_t)i].setBounds(cell.removeFromLeft(58));buttons[(size_t)i].setBounds(cell);}
-  showOutput.setBounds(a.removeFromTop(42).withWidth(280));
- }
+    explicit VideoOutputView(std::shared_ptr<VideoState> s):state(std::move(s)),video(false){
+        addAndMakeVisible(video);startTimerHz(30);
+    }
+    void resized() override {video.setBounds(getLocalBounds());}
 private:
- void loadImage(int i){
-  chooser=std::make_unique<juce::FileChooser>("Image pour "+juce::String(noteNames[(size_t)i]),juce::File(),"*.png;*.jpg;*.jpeg");
-  chooser->launchAsync(juce::FileBrowserComponent::openMode|juce::FileBrowserComponent::canSelectFiles,[this,i](const juce::FileChooser& c){
-   auto f=c.getResult();if(f.existsAsFile()){{const juce::ScopedLock sl(state->lock);state->images[(size_t)i]=f;}settings->setValue("image"+juce::String(i),f.getFullPathName());settings->saveIfNeeded();}chooser.reset();
-  });
- }
- void refreshDevices(){
-  inDevices=router.inputs();outDevices=router.outputs();inBox.clear();outBox.clear();inBox.addItem("Sélectionner le clavier...",1);outBox.addItem("Sélectionner la sortie...",1);
-  for(int i=0;i<inDevices.size();++i)inBox.addItem(inDevices.getReference(i).name,i+2);
-  for(int i=0;i<outDevices.size();++i)outBox.addItem(outDevices.getReference(i).name,i+2);
-  auto si=settings->getValue("midiInput"),so=settings->getValue("midiOutput");
-  for(int i=0;i<inDevices.size();++i)if(inDevices.getReference(i).identifier==si)inBox.setSelectedId(i+2,juce::dontSendNotification);
-  for(int i=0;i<outDevices.size();++i)if(outDevices.getReference(i).identifier==so)outBox.setSelectedId(i+2,juce::dontSendNotification);
- }
- void chooseInput(){int i=inBox.getSelectedId()-2;if(i>=0&&i<inDevices.size()){auto d=inDevices.getReference(i);router.openInput(d.identifier);settings->setValue("midiInput",d.identifier);settings->saveIfNeeded();}}
- void chooseOutput(){int i=outBox.getSelectedId()-2;if(i>=0&&i<outDevices.size()){auto d=outDevices.getReference(i);router.openOutput(d.identifier);settings->setValue("midiOutput",d.identifier);settings->saveIfNeeded();}}
- void openOutput(){if(!outputWindow)outputWindow=std::make_unique<OutputWindow>(state);outputWindow->setVisible(true);outputWindow->toFront(true);}
- std::shared_ptr<State> state;Router router;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
- std::array<juce::TextButton,12> buttons;std::array<juce::Label,12> labels;juce::Label inLabel,outLabel,fadeLabel;juce::ComboBox inBox,outBox;juce::TextButton refresh,showOutput;juce::Slider fade;
- juce::Array<juce::MidiDeviceInfo> inDevices,outDevices;
+    void timerCallback() override {
+        juce::File file;juce::uint64 serial;bool held,freeze;double release,fade;
+        {const juce::ScopedLock sl(state->lock);file=state->file;serial=state->triggerSerial;held=state->held;freeze=state->freezeOnRelease;release=state->releaseMs;fade=state->fadeSeconds;}
+        if(file!=loadedFile){loadedFile=file;if(file.existsAsFile())video.load(file);else video.stop();seenSerial=0;video.setAlpha(0.0f);}
+        if(serial!=seenSerial&&serial!=0){seenSerial=serial;double start=0;{const juce::ScopedLock sl(state->lock);start=state->playhead;}video.setPosition(start);video.setAlpha(1.0f);video.play();fading=false;}
+        if(seenSerial!=0&&!held&&release>0.0){
+            if(!fading){fading=true;fadeStart=release;if(freeze)video.stop();}
+            double elapsed=juce::Time::getMillisecondCounterHiRes()-fadeStart;
+            float a=fade<=0.0?0.0f:(float)juce::jlimit(0.0,1.0,1.0-elapsed/(fade*1000.0));
+            video.setAlpha(a);
+            if(a<=0.001f){video.stop();video.setAlpha(0.0f);fading=false;seenSerial=0;const juce::ScopedLock sl(state->lock);state->pitch=-1;state->releaseMs=0.0;}
+        }
+    }
+    std::shared_ptr<VideoState> state;juce::VideoComponent video;juce::File loadedFile;juce::uint64 seenSerial=0;bool fading=false;double fadeStart=0.0;
 };
-class MainWindow final:public juce::DocumentWindow {
-public:MainWindow():DocumentWindow("MIDI Image Player",juce::Colour(0xff202329),allButtons){writeStartupLog("MainWindow: début");setUsingNativeTitleBar(true);setContentOwned(new MainView(),true);setResizable(true,true);centreWithSize(820,620);writeStartupLog("MainWindow: fenêtre créée");}
- void closeButtonPressed() override{juce::JUCEApplication::getInstance()->systemRequestedQuit();}
+
+class OutputWindow final : public juce::DocumentWindow {
+public:
+    explicit OutputWindow(std::shared_ptr<VideoState> s):DocumentWindow("MIDI Video Player | Sortie OBS",juce::Colours::black,allButtons){
+        setUsingNativeTitleBar(true);setContentOwned(new VideoOutputView(std::move(s)),true);setResizable(true,true);
+        getConstrainer()->setFixedAspectRatio(16.0/9.0);setResizeLimits(480,270,1920,1080);centreWithSize(960,540);
+    }
+    void closeButtonPressed() override {setVisible(false);}
 };
-class App final:public juce::JUCEApplication {
-public:const juce::String getApplicationName()override{return "MIDI Image Player";}const juce::String getApplicationVersion()override{return "1.0.0";}bool moreThanOneInstanceAllowed()override{return false;}
- void initialise(const juce::String&)override{writeStartupLog("Application: initialise");window=std::make_unique<MainWindow>();writeStartupLog("Application: fenêtre construite");window->setVisible(true);window->toFront(true);writeStartupLog("Application: fenêtre affichée");}void shutdown()override{writeStartupLog("Application: shutdown");window.reset();}
- void unhandledException(const std::exception* e,const juce::String& source,int line) override {writeStartupLog("Exception: "+(e?juce::String(e->what()):juce::String("inconnue"))+" | "+source+" | ligne "+juce::String(line));}
+
+class MainView final : public juce::Component, private juce::Timer {
+public:
+    MainView():state(std::make_shared<VideoState>()),router(state),preview(false),timeline(state){
+        juce::PropertiesFile::Options o;o.applicationName="MIDI Video Player";o.filenameSuffix="settings";o.folderName="MIDI Video Player";
+        settings=std::make_unique<juce::PropertiesFile>(o);
+        auto path=settings->getValue("video");if(path.isNotEmpty()){juce::File f(path);if(f.existsAsFile())loadVideo(f);}
+        for(int i=0;i<12;++i){auto key="markers"+juce::String(i);state->markers[(size_t)i]=parseMarkers(settings->getValue(key));}
+        state->fadeSeconds=settings->getDoubleValue("fade",0.6);state->freezeOnRelease=settings->getBoolValue("freeze",true);
+        addAndMakeVisible(preview);addAndMakeVisible(timeline);
+        addAndMakeVisible(openVideo);addAndMakeVisible(play);addAndMakeVisible(addMarker);addAndMakeVisible(noteChoice);
+        addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
+        addAndMakeVisible(modeLabel);addAndMakeVisible(modeBox);addAndMakeVisible(fadeLabel);addAndMakeVisible(fadeSlider);addAndMakeVisible(outputButton);
+        openVideo.setButtonText("Ouvrir une vidéo");openVideo.onClick=[this]{chooseVideo();};
+        play.setButtonText("Lire / Pause");play.onClick=[this]{if(preview.isPlaying())preview.stop();else preview.play();};
+        addMarker.setButtonText("Ajouter un repère à la position");addMarker.onClick=[this]{addCurrentMarker();};
+        for(int i=0;i<12;++i)noteChoice.addItem(notes[(size_t)i],i+1);
+        noteChoice.setSelectedId(1);
+        timeline.changed=[this]{saveMarkers();};
+        inputLabel.setText("Entrée MIDI",juce::dontSendNotification);outputLabel.setText("Sortie MIDI (loopMIDI)",juce::dontSendNotification);
+        modeLabel.setText("Au relâchement",juce::dontSendNotification);modeBox.addItem("Figer la dernière image puis fondu",1);modeBox.addItem("Continuer la vidéo pendant le fondu",2);
+        modeBox.setSelectedId(state->freezeOnRelease?1:2);modeBox.onChange=[this]{const juce::ScopedLock sl(state->lock);state->freezeOnRelease=modeBox.getSelectedId()==1;settings->setValue("freeze",state->freezeOnRelease);settings->saveIfNeeded();};
+        fadeLabel.setText("Durée du fondu",juce::dontSendNotification);fadeSlider.setRange(0,5,0.05);fadeSlider.setValue(state->fadeSeconds);fadeSlider.setTextBoxStyle(juce::Slider::TextBoxRight,false,65,22);fadeSlider.setTextValueSuffix(" s");
+        fadeSlider.onValueChange=[this]{const juce::ScopedLock sl(state->lock);state->fadeSeconds=fadeSlider.getValue();settings->setValue("fade",state->fadeSeconds);settings->saveIfNeeded();};
+        refresh.setButtonText("Actualiser");refresh.onClick=[this]{refreshMidi();};inputBox.onChange=[this]{selectInput();};outputBox.onChange=[this]{selectOutput();};
+        outputButton.setButtonText("Ouvrir la sortie vidéo OBS");outputButton.onClick=[this]{if(!outputWindow)outputWindow=std::make_unique<OutputWindow>(state);outputWindow->setVisible(true);outputWindow->toFront(true);};
+        refreshMidi();setSize(1120,850);startTimerHz(10);
+    }
+    ~MainView() override {outputWindow.reset();if(settings)settings->saveIfNeeded();}
+    void paint(juce::Graphics& g) override {g.fillAll(juce::Colour(0xff202329));g.setColour(juce::Colours::white);g.setFont(juce::Font(22,juce::Font::bold));g.drawText("MIDI VIDEO PLAYER",24,12,getWidth()-48,30,juce::Justification::centredLeft);g.setColour(juce::Colour(0xffb4bdc9));g.setFont(13);g.drawText("Place les marqueurs sur les 12 pistes, puis déclenche-les avec ton clavier MIDI.",24,42,getWidth()-48,22,juce::Justification::centredLeft);}
+    void resized() override {
+        auto a=getLocalBounds().reduced(22);a.removeFromTop(72);
+        auto top=a.removeFromTop(300);auto left=top.removeFromLeft(520);preview.setBounds(left);auto controls=top.reduced(12,0);
+        openVideo.setBounds(controls.removeFromTop(36));controls.removeFromTop(8);play.setBounds(controls.removeFromTop(34));controls.removeFromTop(8);
+        inputLabel.setBounds(controls.removeFromTop(20));inputBox.setBounds(controls.removeFromTop(28));controls.removeFromTop(5);
+        outputLabel.setBounds(controls.removeFromTop(20));outputBox.setBounds(controls.removeFromTop(28));refresh.setBounds(controls.removeFromTop(30));
+        a.removeFromTop(8);auto timelineHead=a.removeFromTop(32);addMarker.setBounds(timelineHead.removeFromLeft(245));timelineHead.removeFromLeft(10);noteChoice.setBounds(timelineHead.removeFromLeft(110));
+        timeline.setBounds(a.removeFromTop(250));a.removeFromTop(8);
+        auto opts=a.removeFromTop(34);modeLabel.setBounds(opts.removeFromLeft(115));modeBox.setBounds(opts.removeFromLeft(300));opts.removeFromLeft(15);fadeLabel.setBounds(opts.removeFromLeft(100));fadeSlider.setBounds(opts.removeFromLeft(180));
+        a.removeFromTop(10);outputButton.setBounds(a.removeFromTop(38).withWidth(250));
+    }
+private:
+    void timerCallback() override {
+        if(preview.isPlaying()){double p=preview.getPosition();{const juce::ScopedLock sl(state->lock);state->playhead=p;}timeline.repaint();}
+    }
+    void chooseVideo(){chooser=std::make_unique<juce::FileChooser>("Choisir une vidéo",juce::File(),"*.mp4;*.mov;*.m4v;*.avi;*.wmv");chooser->launchAsync(juce::FileBrowserComponent::openMode|juce::FileBrowserComponent::canSelectFiles,[this](const juce::FileChooser& c){auto f=c.getResult();if(f.existsAsFile())loadVideo(f);chooser.reset();});}
+    void loadVideo(const juce::File& f){preview.stop();if(preview.load(f)){juce::ScopedLock sl(state->lock);state->file=f;state->duration=preview.getVideoDuration();state->playhead=0;timeline.setDuration(state->duration);settings->setValue("video",f.getFullPathName());settings->saveIfNeeded();}}
+    void addCurrentMarker(){int p=noteChoice.getSelectedId()-1;if(p<0||p>=12)return;double t=preview.getPosition();{const juce::ScopedLock sl(state->lock);t=juce::jlimit(0.0,state->duration,t);auto& v=state->markers[(size_t)p];v.push_back(t);std::sort(v.begin(),v.end());}saveMarkers();timeline.repaint();}
+    void saveMarkers(){const juce::ScopedLock sl(state->lock);for(int i=0;i<12;++i)settings->setValue("markers"+juce::String(i),markerString(state->markers[(size_t)i]));settings->saveIfNeeded();}
+    void refreshMidi(){ins=router.inputs();outs=router.outputs();inputBox.clear();outputBox.clear();inputBox.addItem("Choisir une entrée...",1);outputBox.addItem("Choisir une sortie...",1);for(int i=0;i<ins.size();++i)inputBox.addItem(ins.getReference(i).name,i+2);for(int i=0;i<outs.size();++i)outputBox.addItem(outs.getReference(i).name,i+2);
+        auto si=settings->getValue("input"),so=settings->getValue("output");for(int i=0;i<ins.size();++i)if(ins.getReference(i).identifier==si)inputBox.setSelectedId(i+2,juce::dontSendNotification);for(int i=0;i<outs.size();++i)if(outs.getReference(i).identifier==so)outputBox.setSelectedId(i+2,juce::dontSendNotification);}
+    void selectInput(){int i=inputBox.getSelectedId()-2;if(i>=0&&i<ins.size()){auto d=ins.getReference(i);router.openInput(d.identifier);settings->setValue("input",d.identifier);settings->saveIfNeeded();}}
+    void selectOutput(){int i=outputBox.getSelectedId()-2;if(i>=0&&i<outs.size()){auto d=outs.getReference(i);router.openOutput(d.identifier);settings->setValue("output",d.identifier);settings->saveIfNeeded();}}
+    std::shared_ptr<VideoState> state;MidiRouter router;juce::VideoComponent preview;MarkerTimeline timeline;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
+    juce::TextButton openVideo,play,addMarker,refresh,outputButton;juce::ComboBox noteChoice,inputBox,outputBox,modeBox;juce::Label inputLabel,outputLabel,modeLabel,fadeLabel;juce::Slider fadeSlider;juce::Array<juce::MidiDeviceInfo> ins,outs;
+};
+
+class MainWindow final : public juce::DocumentWindow {
+public:
+    MainWindow():DocumentWindow("MIDI Video Player",juce::Colour(0xff202329),allButtons){setUsingNativeTitleBar(true);setContentOwned(new MainView(),true);setResizable(true,true);centreWithSize(1120,850);}
+    void closeButtonPressed() override {juce::JUCEApplication::getInstance()->systemRequestedQuit();}
+};
+class App final : public juce::JUCEApplication {
+public:
+    const juce::String getApplicationName() override{return "MIDI Video Player";}
+    const juce::String getApplicationVersion() override{return "0.1.0";}
+    bool moreThanOneInstanceAllowed() override{return false;}
+    void initialise(const juce::String&) override {window=std::make_unique<MainWindow>();window->setVisible(true);window->toFront(true);}
+    void shutdown() override {window.reset();}
 private:std::unique_ptr<MainWindow> window;
 };
 }
