@@ -4,6 +4,10 @@
 #include <cmath>
 
 namespace {
+void writeStartupLog(const juce::String& message) {
+ auto logFile = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("MIDI Image Player startup.log");
+ logFile.appendText(juce::Time::getCurrentTime().toString(true, true) + " | " + message + "\r\n");
+}
 const std::array<const char*,12> noteNames{"Do","Do#","Ré","Ré#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"};
 struct State {
  juce::CriticalSection lock;
@@ -69,6 +73,7 @@ public:
 class MainView final:public juce::Component {
 public:
  MainView():state(std::make_shared<State>()),router(state){
+  writeStartupLog("MainView: début du constructeur");
   juce::PropertiesFile::Options o;o.applicationName="MIDI Image Player";o.filenameSuffix="settings";o.folderName="MIDI Image Player";
   settings=std::make_unique<juce::PropertiesFile>(o);
   for(int i=0;i<12;++i){
@@ -87,7 +92,9 @@ public:
   {const juce::ScopedLock sl(state->lock);state->fadeSeconds=fade.getValue();}
   fade.onValueChange=[this]{{const juce::ScopedLock sl(state->lock);state->fadeSeconds=fade.getValue();}settings->setValue("fadeSeconds",fade.getValue());settings->saveIfNeeded();};
   inBox.onChange=[this]{chooseInput();};outBox.onChange=[this]{chooseOutput();};
+  writeStartupLog("MainView: avant actualisation MIDI");
   refreshDevices();setSize(820,620);
+  writeStartupLog("MainView: constructeur terminé");
  }
  ~MainView() override{outputWindow.reset();if(settings)settings->saveIfNeeded();}
  void paint(juce::Graphics& g) override{
@@ -126,12 +133,13 @@ private:
  juce::Array<juce::MidiDeviceInfo> inDevices,outDevices;
 };
 class MainWindow final:public juce::DocumentWindow {
-public:MainWindow():DocumentWindow("MIDI Image Player",juce::Colour(0xff202329),allButtons){setUsingNativeTitleBar(true);setContentOwned(new MainView(),true);setResizable(true,true);centreWithSize(820,620);}
+public:MainWindow():DocumentWindow("MIDI Image Player",juce::Colour(0xff202329),allButtons){writeStartupLog("MainWindow: début");setUsingNativeTitleBar(true);setContentOwned(new MainView(),true);setResizable(true,true);centreWithSize(820,620);writeStartupLog("MainWindow: fenêtre créée");}
  void closeButtonPressed() override{juce::JUCEApplication::getInstance()->systemRequestedQuit();}
 };
 class App final:public juce::JUCEApplication {
 public:const juce::String getApplicationName()override{return "MIDI Image Player";}const juce::String getApplicationVersion()override{return "1.0.0";}bool moreThanOneInstanceAllowed()override{return false;}
- void initialise(const juce::String&)override{window=std::make_unique<MainWindow>();}void shutdown()override{window.reset();}
+ void initialise(const juce::String&)override{writeStartupLog("Application: initialise");window=std::make_unique<MainWindow>();writeStartupLog("Application: fenêtre principale prête");}void shutdown()override{writeStartupLog("Application: shutdown");window.reset();}
+ void unhandledException(const std::exception* e,const juce::String& source,int line) override {writeStartupLog("Exception: "+(e?juce::String(e->what()):juce::String("inconnue"))+" | "+source+" | ligne "+juce::String(line));}
 private:std::unique_ptr<MainWindow> window;
 };
 }
