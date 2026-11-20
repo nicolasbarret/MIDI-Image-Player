@@ -59,6 +59,7 @@ class MarkerTimeline final : public juce::Component {
 public:
     explicit MarkerTimeline(std::shared_ptr<VideoState> s):state(std::move(s)){setMouseCursor(juce::MouseCursor::PointingHandCursor);}
     std::function<void()> changed;
+    std::function<void(double)> seeked;
     void setDuration(double d){duration=juce::jmax(0.01,d);repaint();}
     void paint(juce::Graphics& g) override {
         g.fillAll(juce::Colour(0xff171a20));
@@ -91,7 +92,7 @@ public:
         dragRow=row; dragIndex=-1; double best=0.45;
         {const juce::ScopedLock sl(state->lock);auto& v=state->markers[(size_t)row];
          for(size_t i=0;i<v.size();++i){double dx=std::abs(v[i]-clicked);if(dx<best){best=dx;dragIndex=(int)i;}}}
-        if(dragIndex>=0){dragging=true;moveMarker(clicked);} else dragging=false;
+        if(dragIndex>=0){dragging=true;moveMarker(clicked);} else {dragging=false;{const juce::ScopedLock sl(state->lock);state->playhead=juce::jlimit(0.0,duration,clicked);}if(seeked)seeked(clicked);repaint();}
     }
     void mouseDrag(const juce::MouseEvent& e) override {
         if(!dragging)return;
@@ -157,6 +158,7 @@ public:
         for(int i=0;i<12;++i)noteChoice.addItem(notes[(size_t)i],i+1);
         noteChoice.setSelectedId(1);
         timeline.changed=[this]{saveMarkers();};
+        timeline.seeked=[this](double t){preview.setPosition(t);};
         inputLabel.setText("Entrée MIDI",juce::dontSendNotification);outputLabel.setText("Sortie MIDI (loopMIDI)",juce::dontSendNotification);
         modeLabel.setText("Au relâchement",juce::dontSendNotification);modeBox.addItem("Figer la dernière image puis fondu",1);modeBox.addItem("Continuer la vidéo pendant le fondu",2);
         modeBox.setSelectedId(state->freezeOnRelease?1:2);modeBox.onChange=[this]{const juce::ScopedLock sl(state->lock);state->freezeOnRelease=modeBox.getSelectedId()==1;settings->setValue("freeze",state->freezeOnRelease);settings->saveIfNeeded();};
