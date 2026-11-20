@@ -119,7 +119,7 @@ private:
         juce::File file;juce::uint64 serial;bool held,freeze;double release,fade;
         {const juce::ScopedLock sl(state->lock);file=state->file;serial=state->triggerSerial;held=state->held;freeze=state->freezeOnRelease;release=state->releaseMs;fade=state->fadeSeconds;}
         if(file!=loadedFile){loadedFile=file;if(file.existsAsFile())video.load(file);else video.stop();seenSerial=0;video.setAlpha(0.0f);}
-        if(serial!=seenSerial&&serial!=0){seenSerial=serial;double start=0;{const juce::ScopedLock sl(state->lock);start=state->playhead;}video.setPosition(start);video.setAlpha(1.0f);video.play();fading=false;}
+        if(serial!=seenSerial&&serial!=0){seenSerial=serial;double start=0;{const juce::ScopedLock sl(state->lock);start=state->playhead;}video.setPlayPosition(start);video.setAlpha(1.0f);video.play();fading=false;}
         if(seenSerial!=0&&!held&&release>0.0){
             if(!fading){fading=true;fadeStart=release;if(freeze)video.stop();}
             double elapsed=juce::Time::getMillisecondCounterHiRes()-fadeStart;
@@ -183,11 +183,11 @@ public:
     }
 private:
     void timerCallback() override {
-        if(preview.isPlaying()){double p=preview.getPosition();{const juce::ScopedLock sl(state->lock);state->playhead=p;}timeline.repaint();}
+        if(preview.isPlaying()){double p=preview.getPlayPosition();{const juce::ScopedLock sl(state->lock);state->playhead=p;}timeline.repaint();}
     }
     void chooseVideo(){chooser=std::make_unique<juce::FileChooser>("Choisir une vidéo",juce::File(),"*.mp4;*.mov;*.m4v;*.avi;*.wmv");chooser->launchAsync(juce::FileBrowserComponent::openMode|juce::FileBrowserComponent::canSelectFiles,[this](const juce::FileChooser& c){auto f=c.getResult();if(f.existsAsFile())loadVideo(f);chooser.reset();});}
     void loadVideo(const juce::File& f){preview.stop();if(preview.load(f)){juce::ScopedLock sl(state->lock);state->file=f;state->duration=preview.getVideoDuration();state->playhead=0;timeline.setDuration(state->duration);settings->setValue("video",f.getFullPathName());settings->saveIfNeeded();}}
-    void addCurrentMarker(){int p=noteChoice.getSelectedId()-1;if(p<0||p>=12)return;double t=preview.getPosition();{const juce::ScopedLock sl(state->lock);t=juce::jlimit(0.0,state->duration,t);auto& v=state->markers[(size_t)p];v.push_back(t);std::sort(v.begin(),v.end());}saveMarkers();timeline.repaint();}
+    void addCurrentMarker(){int p=noteChoice.getSelectedId()-1;if(p<0||p>=12)return;double t=preview.getPlayPosition();{const juce::ScopedLock sl(state->lock);t=juce::jlimit(0.0,state->duration,t);auto& v=state->markers[(size_t)p];v.push_back(t);std::sort(v.begin(),v.end());}saveMarkers();timeline.repaint();}
     void saveMarkers(){const juce::ScopedLock sl(state->lock);for(int i=0;i<12;++i)settings->setValue("markers"+juce::String(i),markerString(state->markers[(size_t)i]));settings->saveIfNeeded();}
     void refreshMidi(){ins=router.inputs();outs=router.outputs();inputBox.clear();outputBox.clear();inputBox.addItem("Choisir une entrée...",1);outputBox.addItem("Choisir une sortie...",1);for(int i=0;i<ins.size();++i)inputBox.addItem(ins.getReference(i).name,i+2);for(int i=0;i<outs.size();++i)outputBox.addItem(outs.getReference(i).name,i+2);
         auto si=settings->getValue("input"),so=settings->getValue("output");for(int i=0;i<ins.size();++i)if(ins.getReference(i).identifier==si)inputBox.setSelectedId(i+2,juce::dontSendNotification);for(int i=0;i<outs.size();++i)if(outs.getReference(i).identifier==so)outputBox.setSelectedId(i+2,juce::dontSendNotification);}
