@@ -158,7 +158,7 @@ public:
         for(int i=0;i<12;++i)noteChoice.addItem(notes[(size_t)i],i+1);
         noteChoice.setSelectedId(1);
         timeline.changed=[this]{saveMarkers();};
-        timeline.seeked=[this](double t){preview.setPosition(t);};
+        timeline.seeked=[this](double t){preview.setPlayPosition(t);};
         inputLabel.setText("Entrée MIDI",juce::dontSendNotification);outputLabel.setText("Sortie MIDI (loopMIDI)",juce::dontSendNotification);
         modeLabel.setText("Au relâchement",juce::dontSendNotification);modeBox.addItem("Figer la dernière image puis fondu",1);modeBox.addItem("Continuer la vidéo pendant le fondu",2);
         modeBox.setSelectedId(state->freezeOnRelease?1:2);modeBox.onChange=[this]{const juce::ScopedLock sl(state->lock);state->freezeOnRelease=modeBox.getSelectedId()==1;settings->setValue("freeze",state->freezeOnRelease);settings->saveIfNeeded();};
