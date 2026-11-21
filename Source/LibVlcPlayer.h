@@ -181,7 +181,7 @@ public:
                 return;
             }
             Api::get().setHwnd(player, videoHwnd);
-            Api::get().play(player);
+            lastPlayResult = Api::get().play(player);
             pendingPlay = false;
         }
     }
@@ -201,6 +201,19 @@ public:
     bool isPlaying() const
     {
         return player && Api::get().isPlaying(player) != 0;
+    }
+
+    juce::String playbackDiagnostic() const
+    {
+        if (!player) return errorMessage();
+        if (!media) return "Aucun média associé au lecteur VLC.";
+        if (!videoHwnd || !IsWindow(videoHwnd)) return "Fenêtre vidéo Windows non créée.";
+        if (lastPlayResult < 0) return "LibVLC a refusé le démarrage (code -1).";
+        if (isPlaying()) return "VLC : lecture active.";
+        const auto ms = Api::get().getTime(player);
+        const auto len = Api::get().getLength(player);
+        if (len > 0 && ms >= len) return "VLC : vidéo arrivée à la fin.";
+        return "VLC chargé, mais le moteur ne signale pas de lecture active.";
     }
 
     double getPlayPosition() const
@@ -294,7 +307,9 @@ private:
             parentHwnd = parent;
             auto style = GetWindowLongPtrW(parentHwnd, GWL_STYLE);
             SetWindowLongPtrW(parentHwnd, GWL_STYLE, style | WS_CLIPCHILDREN);
-            videoHwnd = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+            // LibVLC requires WS_CLIPCHILDREN on the HWND used as its video target.
+            videoHwnd = CreateWindowExW(0, L"STATIC", L"",
+                                        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
                                         0, 0, 1, 1, parentHwnd, nullptr,
                                         GetModuleHandleW(nullptr), nullptr);
             blackoutHwnd = CreateWindowExW(WS_EX_LAYERED, L"STATIC", L"",
@@ -323,7 +338,7 @@ private:
         ScreenToClient(parentHwnd, &p);
         int w = juce::jmax(1, screen.getWidth());
         int h = juce::jmax(1, screen.getHeight());
-        SetWindowPos(videoHwnd, HWND_BOTTOM, p.x, p.y, w, h, SWP_NOACTIVATE);
+        SetWindowPos(videoHwnd, HWND_TOP, p.x, p.y, w, h, SWP_NOACTIVATE);
         SetWindowPos(blackoutHwnd, HWND_TOP, p.x, p.y, w, h, SWP_NOACTIVATE);
         setBlackoutAlpha(blackoutAlpha);
     }
@@ -348,6 +363,7 @@ private:
     std::int64_t pendingSeekMs = 0;
     bool pendingSeek = false;
     bool pendingPlay = false;
+    int lastPlayResult = 0;
     juce::File loadedFile;
 };
 }
