@@ -130,9 +130,6 @@ public:
     }
     void resized() override {video.setBounds(getLocalBounds());}
 private:
-    double lastTimelineDuration=0.0;
-    bool timelineDurationNeedsUpdate(double duration) const { return std::abs(duration - lastTimelineDuration) > 0.02; }
-    void markProjectDirty(){projectDirty=true;nextAutoSaveMs=juce::Time::getMillisecondCounter()+1000;}
     void timerCallback() override {
         juce::File file;juce::uint64 serial;bool held,freeze;double release,fade;
         {const juce::ScopedLock sl(state->lock);file=state->file;serial=state->triggerSerial;held=state->held;freeze=state->freezeOnRelease;release=state->releaseMs;fade=state->fadeSeconds;}
@@ -225,6 +222,9 @@ public:
         a.removeFromTop(10);outputButton.setBounds(a.removeFromTop(38).withWidth(250));
     }
 private:
+    double lastTimelineDuration=0.0;
+    bool timelineDurationNeedsUpdate(double duration) const { return std::abs(duration - lastTimelineDuration) > 0.02; }
+    void markProjectDirty(){projectDirty=true;nextAutoSaveMs=juce::Time::getMillisecondCounter()+1000;}
     void timerCallback() override {
         if(preview.isPlaying()){
             double p=preview.getPlayPosition();
