@@ -6,6 +6,12 @@
 #include <cmath>
 
 namespace {
+class ReadableLookAndFeel final : public juce::LookAndFeel_V4 {
+public:
+    juce::Font getTextButtonFont(juce::TextButton&, int) override { return juce::Font(16.0f, juce::Font::bold); }
+    juce::Font getComboBoxFont(juce::ComboBox&) override { return juce::Font(15.0f); }
+    juce::Font getLabelFont(juce::Label&) override { return juce::Font(15.0f); }
+};
 const std::array<const char*,12> notes{"Do","Do#","Ré","Ré#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"};
 struct VideoState {
     juce::CriticalSection lock;
@@ -183,7 +189,14 @@ public:
         fadeSlider.onValueChange=[this]{const juce::ScopedLock sl(state->lock);state->fadeSeconds=fadeSlider.getValue();settings->setValue("fade",state->fadeSeconds);settings->saveIfNeeded();};
         refresh.setButtonText("Actualiser");refresh.onClick=[this]{refreshMidi();};inputBox.onChange=[this]{selectInput();};outputBox.onChange=[this]{selectOutput();};
         outputButton.setButtonText("Ouvrir la sortie vidéo OBS");outputButton.onClick=[this]{if(!outputWindow)outputWindow=std::make_unique<OutputWindow>(state);outputWindow->setVisible(true);outputWindow->toFront(true);};
-        refreshMidi();setSize(1120,850);startTimerHz(10);
+        refreshMidi();setSize(1120,850);
+        auto recovery=recoveryProjectFile();
+        if(recovery.existsAsFile() && recovery.getSize()>0) loadProjectFile(recovery);
+        else {
+            auto last=settings->getValue("lastProject");
+            if(last.isNotEmpty() && juce::File(last).existsAsFile()) loadProjectFile(juce::File(last));
+        }
+        startTimerHz(10);
     }
     ~MainView() override {outputWindow.reset();setLookAndFeel(nullptr);if(settings)settings->saveIfNeeded();}
     void paint(juce::Graphics& g) override {g.fillAll(juce::Colour(0xff202329));g.setColour(juce::Colours::white);g.setFont(juce::Font(22,juce::Font::bold));g.drawText("MIDI VIDEO PLAYER",24,12,getWidth()-48,30,juce::Justification::centredLeft);g.setColour(juce::Colour(0xffb4bdc9));g.setFont(13);g.drawText("Place les marqueurs sur les 12 pistes, puis déclenche-les avec ton clavier MIDI.",24,42,getWidth()-48,22,juce::Justification::centredLeft);}
@@ -245,10 +258,13 @@ private:
     bool writeProjectFile(const juce::File& file){
         auto json=juce::JSON::toString(makeProjectData(),true);
         if(!file.replaceWithText(json)) return false;
-        settings->setValue("lastProject",file.getFullPathName());settings->saveIfNeeded();
-        currentProject=file;projectDirty=false;return true;
+        if(file!=recoveryProjectFile()){
+            settings->setValue("lastProject",file.getFullPathName());settings->saveIfNeeded();
+            recoveryProjectFile().deleteFile();currentProject=file;
+        }
+        projectDirty=false;return true;
     }
-    void writeRecoveryProject(){writeProjectFile(recoveryProjectFile());}
+    void writeRecoveryProject(){auto f=recoveryProjectFile();f.replaceWithText(juce::JSON::toString(makeProjectData(),true));}
     void saveProjectAction(){
         if(currentProject.existsAsFile()){
             if(writeProjectFile(currentProject)) videoStatus.setText("Projet enregistré : "+currentProject.getFileName(),juce::dontSendNotification);
@@ -298,7 +314,7 @@ private:
     void selectInput(){int i=inputBox.getSelectedId()-2;if(i>=0&&i<ins.size()){auto d=ins.getReference(i);router.openInput(d.identifier);settings->setValue("input",d.identifier);settings->saveIfNeeded();}}
     void selectOutput(){int i=outputBox.getSelectedId()-2;if(i>=0&&i<outs.size()){auto d=outs.getReference(i);router.openOutput(d.identifier);settings->setValue("output",d.identifier);settings->saveIfNeeded();}}
     std::shared_ptr<VideoState> state;MidiRouter router;juce::VideoComponent preview;MarkerTimeline timeline;
-    juce::LookAndFeel_V4 readableLookAndFeel;
+    ReadableLookAndFeel readableLookAndFeel;
     juce::TextButton newProject,openProject,saveProject,saveAsProject;
     juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
     juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton;juce::ComboBox noteChoice,inputBox,outputBox,modeBox;juce::Label inputLabel,outputLabel,modeLabel,fadeLabel,videoStatus;juce::Slider fadeSlider;juce::Array<juce::MidiDeviceInfo> ins,outs;
