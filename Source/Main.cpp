@@ -185,7 +185,7 @@ public:
                 std::unique_ptr<juce::AudioFormatReader> reader(fm.createReaderFor(wav));
                 if(reader && reader->lengthInSamples>0) {
                     const auto total=reader->lengthInSamples; juce::AudioBuffer<float> buffer(1,8192);
-                    for(juce::int64 offset=0;offset<total && !threadShouldExit();offset+=8192) {
+                    for(juce::int64 offset=0;offset<total && !shouldExit();offset+=8192) {
                         int count=(int)juce::jmin((juce::int64)8192,total-offset);
                         if(!reader->read(&buffer,0,count,offset,true,false)) break;
                         for(int i=0;i<count;++i) { int bin=juce::jmin(1799,(int)(((offset+i)*1800)/total)); peaks[(size_t)bin]=juce::jmax(peaks[(size_t)bin],std::abs(buffer.getSample(0,i))); }
@@ -196,7 +196,7 @@ public:
             }
         }
         wav.deleteFile();
-        if(callback && !threadShouldExit()) { auto cb=std::move(callback); juce::MessageManager::callAsync([cb=std::move(cb), data=std::move(peaks)]() mutable { cb(std::move(data)); }); }
+        if(callback && !shouldExit()) { auto cb=std::move(callback); juce::MessageManager::callAsync([cb=std::move(cb), data=std::move(peaks)]() mutable { cb(std::move(data)); }); }
         return jobHasFinished;
     }
 private:
