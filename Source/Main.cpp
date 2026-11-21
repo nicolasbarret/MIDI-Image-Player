@@ -129,6 +129,14 @@ public:
         addAndMakeVisible(video);startTimerHz(30);
     }
     void resized() override {video.setBounds(getLocalBounds());}
+    void play() { video.setBlackoutAlpha(0); video.play(); }
+    void pause() { video.pause(); }
+    void stop() { video.stop(); }
+    bool isPlaying() const { return video.isPlaying(); }
+    void seek(double seconds) { video.setPlayPosition(seconds); }
+    double position() const { return video.getPlayPosition(); }
+    double duration() const { return video.getVideoDuration(); }
+    juce::String diagnostic() const { return video.playbackDiagnostic(); }
 private:
     void timerCallback() override {
         juce::File file;juce::uint64 serial;bool held,freeze;double release,fade;
@@ -157,6 +165,14 @@ public:
         getConstrainer()->setFixedAspectRatio(16.0/9.0);setResizeLimits(480,270,1920,1080);centreWithSize(960,540);
     }
     void closeButtonPressed() override {setVisible(false);}
+    void playVideo() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->play(); }
+    void pauseVideo() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->pause(); }
+    void stopVideo() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->stop(); }
+    bool isVideoPlaying() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->isPlaying(); return false; }
+    void seekVideo(double seconds) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->seek(seconds); }
+    double videoPosition() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->position(); return 0.0; }
+    double videoDuration() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->duration(); return 0.0; }
+    juce::String videoDiagnostic() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->diagnostic(); return "Sortie OBS non ouverte"; }
 };
 
 class MainView final : public juce::Component, private juce::Timer {
@@ -167,7 +183,7 @@ public:
         auto path=settings->getValue("video");if(path.isNotEmpty()){juce::File f(path);if(f.existsAsFile())loadVideo(f);}
         for(int i=0;i<12;++i){auto key="markers"+juce::String(i);state->markers[(size_t)i]=parseMarkers(settings->getValue(key));}
         state->fadeSeconds=settings->getDoubleValue("fade",0.6);state->freezeOnRelease=settings->getBoolValue("freeze",true);
-        addAndMakeVisible(preview);addAndMakeVisible(timeline);preview.setOpaque(true);preview.setMuted(true);videoStatus.setColour(juce::Label::textColourId,juce::Colours::white);videoStatus.setText("Aucune vidéo chargée",juce::dontSendNotification);
+        addAndMakeVisible(timeline);videoStatus.setColour(juce::Label::textColourId,juce::Colours::white);videoStatus.setText("Aucune vidéo chargée",juce::dontSendNotification);
         setLookAndFeel(&readableLookAndFeel);
         addAndMakeVisible(newProject);addAndMakeVisible(openProject);addAndMakeVisible(saveProject);addAndMakeVisible(saveAsProject);
         addAndMakeVisible(openVideo);addAndMakeVisible(play);addAndMakeVisible(addMarker);addAndMakeVisible(eraseMarker);addAndMakeVisible(noteChoice);addAndMakeVisible(videoStatus);
@@ -179,20 +195,20 @@ public:
         addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
         addAndMakeVisible(modeLabel);addAndMakeVisible(modeBox);addAndMakeVisible(fadeLabel);addAndMakeVisible(fadeSlider);addAndMakeVisible(outputButton);
         openVideo.setButtonText("Ouvrir une vidéo");openVideo.onClick=[this]{chooseVideo();};
-        play.setButtonText("Lire / Pause");play.onClick=[this]{if(preview.isPlaying()){preview.pause();videoStatus.setText("Lecture en pause",juce::dontSendNotification);}else{preview.play();videoStatus.setText("Commande Lecture envoyée à VLC...",juce::dontSendNotification);}};
+        play.setButtonText("Lire / Pause");play.onClick=[this]{ensureOutputWindow();if(outputWindow->isVideoPlaying()){outputWindow->pauseVideo();videoStatus.setText("Lecture en pause",juce::dontSendNotification);}else{outputWindow->playVideo();videoStatus.setText("Commande Lecture envoyée à VLC...",juce::dontSendNotification);}};
         addMarker.setButtonText("Ajouter un repère à la position");addMarker.onClick=[this]{addCurrentMarker();};
         eraseMarker.setButtonText("Gomme désactivée");eraseMarker.setClickingTogglesState(true);eraseMarker.onClick=[this]{bool on=eraseMarker.getToggleState();eraseMarker.setButtonText(on?"Gomme activée : cliquer un repère":"Gomme désactivée");timeline.setEraseMode(on);};
         for(int i=0;i<12;++i)noteChoice.addItem(notes[(size_t)i],i+1);
         noteChoice.setSelectedId(1);
         timeline.changed=[this]{saveMarkers();};
-        timeline.seeked=[this](double t){preview.setPlayPosition(t);};
+        timeline.seeked=[this](double t){if(outputWindow)outputWindow->seekVideo(t);};
         inputLabel.setText("Entrée MIDI",juce::dontSendNotification);outputLabel.setText("Sortie MIDI (loopMIDI)",juce::dontSendNotification);
         modeLabel.setText("Au relâchement",juce::dontSendNotification);modeBox.addItem("Figer la dernière image puis fondu",1);modeBox.addItem("Continuer la vidéo pendant le fondu",2);
         modeBox.setSelectedId(state->freezeOnRelease?1:2);modeBox.onChange=[this]{const juce::ScopedLock sl(state->lock);state->freezeOnRelease=modeBox.getSelectedId()==1;settings->setValue("freeze",state->freezeOnRelease);settings->saveIfNeeded();};
         fadeLabel.setText("Durée du fondu",juce::dontSendNotification);fadeSlider.setRange(0,5,0.05);fadeSlider.setValue(state->fadeSeconds);fadeSlider.setTextBoxStyle(juce::Slider::TextBoxRight,false,65,22);fadeSlider.setTextValueSuffix(" s");
         fadeSlider.onValueChange=[this]{const juce::ScopedLock sl(state->lock);state->fadeSeconds=fadeSlider.getValue();settings->setValue("fade",state->fadeSeconds);settings->saveIfNeeded();};
         refresh.setButtonText("Actualiser");refresh.onClick=[this]{refreshMidi();};inputBox.onChange=[this]{selectInput();};outputBox.onChange=[this]{selectOutput();};
-        outputButton.setButtonText("Ouvrir la sortie vidéo OBS");outputButton.onClick=[this]{if(!outputWindow)outputWindow=std::make_unique<OutputWindow>(state);outputWindow->setVisible(true);outputWindow->toFront(true);};
+        outputButton.setButtonText("Ouvrir la sortie vidéo OBS");outputButton.onClick=[this]{ensureOutputWindow();outputWindow->setVisible(true);outputWindow->toFront(true);};
         refreshMidi();setSize(1120,850);
         auto recovery=recoveryProjectFile();
         if(recovery.existsAsFile() && recovery.getSize()>0) loadProjectFile(recovery);
@@ -212,7 +228,7 @@ public:
         saveProject.setBounds(projectBar.removeFromLeft(115));projectBar.removeFromLeft(7);
         saveAsProject.setBounds(projectBar.removeFromLeft(145));
         a.removeFromTop(8);
-        auto top=a.removeFromTop(300);auto left=top.removeFromLeft(520);videoStatus.setBounds(left.removeFromTop(22));preview.setBounds(left);auto controls=top.reduced(12,0);
+        auto top=a.removeFromTop(180);auto left=top.removeFromLeft(250);videoStatus.setBounds(left.removeFromTop(44));auto controls=top.reduced(12,0);
         openVideo.setBounds(controls.removeFromTop(36));controls.removeFromTop(8);play.setBounds(controls.removeFromTop(34));controls.removeFromTop(8);
         inputLabel.setBounds(controls.removeFromTop(20));inputBox.setBounds(controls.removeFromTop(28));controls.removeFromTop(5);
         outputLabel.setBounds(controls.removeFromTop(20));outputBox.setBounds(controls.removeFromTop(28));refresh.setBounds(controls.removeFromTop(30));
@@ -226,9 +242,9 @@ private:
     bool timelineDurationNeedsUpdate(double duration) const { return std::abs(duration - lastTimelineDuration) > 0.02; }
     void markProjectDirty(){projectDirty=true;nextAutoSaveMs=juce::Time::getMillisecondCounter()+1000;}
     void timerCallback() override {
-        if(preview.isPlaying()){
-            double p=preview.getPlayPosition();
-            double duration=preview.getVideoDuration();
+        if(outputWindow && outputWindow->isVisible() && outputWindow->isVideoPlaying()){
+            double p=outputWindow->videoPosition();
+            double duration=outputWindow->videoDuration();
             {
                 const juce::ScopedLock sl(state->lock);
                 state->playhead=p;
@@ -241,7 +257,7 @@ private:
             juce::File currentVideo;
             { const juce::ScopedLock sl(state->lock); currentVideo = state->file; }
             if (currentVideo.existsAsFile() && videoStatus.getText().startsWith("Commande Lecture envoyée"))
-                videoStatus.setText(preview.playbackDiagnostic(), juce::dontSendNotification);
+                videoStatus.setText(outputWindow ? outputWindow->videoDiagnostic() : "Sortie OBS non ouverte", juce::dontSendNotification);
         }
         if(projectDirty && juce::Time::getMillisecondCounter() >= nextAutoSaveMs){
             writeRecoveryProject();projectDirty=false;nextAutoSaveMs=juce::Time::getMillisecondCounter()+3000;
@@ -249,16 +265,17 @@ private:
     }
     void chooseVideo(){chooser=std::make_unique<juce::FileChooser>("Choisir une vidéo",juce::File(),"*.mp4;*.mov;*.m4v;*.avi;*.wmv");chooser->launchAsync(juce::FileBrowserComponent::openMode|juce::FileBrowserComponent::canSelectFiles,[this](const juce::FileChooser& c){auto f=c.getResult();if(f.existsAsFile())loadVideo(f);chooser.reset();});}
     void loadVideo(const juce::File& f){
-        preview.stop();preview.unload();videoStatus.setText("Chargement de : "+f.getFileName(),juce::dontSendNotification);
-        if(preview.load(f)){
-            {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=preview.getVideoDuration();state->playhead=0.0;}
-            timeline.setDuration(preview.getVideoDuration());preview.setPlayPosition(0.0);preview.play();
-            videoStatus.setText("Vidéo chargée : "+f.getFileName(),juce::dontSendNotification);
+        videoStatus.setText("Chargement de : "+f.getFileName(),juce::dontSendNotification);
+        if(f.existsAsFile()){
+            {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=0.0;state->playhead=0.0;state->held=false;state->releaseMs=0.0;++state->triggerSerial;}
+            timeline.setDuration(60.0);timeline.repaint();
+            ensureOutputWindow();
+            outputWindow->setVisible(true);outputWindow->toFront(true);
+            videoStatus.setText("Vidéo chargée dans la Sortie OBS : "+f.getFileName(),juce::dontSendNotification);
             settings->setValue("video",f.getFullPathName());settings->saveIfNeeded();
-        }else{
-            videoStatus.setText("Erreur vidéo : "+preview.errorMessage(),juce::dontSendNotification);
-        }
+        }else videoStatus.setText("Fichier vidéo introuvable : "+f.getFullPathName(),juce::dontSendNotification);
     }
+    void ensureOutputWindow(){if(!outputWindow)outputWindow=std::make_unique<OutputWindow>(state);}
     juce::File recoveryProjectFile() const {
         auto dir=juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("MIDI Video Player");
         dir.createDirectory();return dir.getChildFile("Recovery.mvproj");
@@ -325,20 +342,20 @@ private:
         timeline.setDuration(state->duration>0.0?state->duration:60.0);timeline.repaint();refreshMidi();
         if(videoPath.isEmpty()) videoStatus.setText("Projet chargé : aucune vidéo associée",juce::dontSendNotification);
         else if(!videoFile.existsAsFile()) videoStatus.setText("Projet chargé, vidéo introuvable : "+videoPath,juce::dontSendNotification);
-        else if(preview.getVideoDuration()>0.0) videoStatus.setText("Projet chargé : "+file.getFileName(),juce::dontSendNotification);
+        else videoStatus.setText("Projet chargé : "+file.getFileName(),juce::dontSendNotification);
     }
     void newProjectAction(){
         {const juce::ScopedLock sl(state->lock);for(auto& m:state->markers)m.clear();state->file={};state->duration=0;state->playhead=0;state->pitch=-1;state->held=false;}
-        preview.stop();preview.unload();timeline.setDuration(60.0);timeline.repaint();currentProject={};projectDirty=true;
+        if(outputWindow)outputWindow->stopVideo();{const juce::ScopedLock sl(state->lock);state->file={};state->duration=0.0;state->playhead=0.0;++state->triggerSerial;}timeline.setDuration(60.0);timeline.repaint();currentProject={};projectDirty=true;
         videoStatus.setText("Nouveau projet",juce::dontSendNotification);writeRecoveryProject();
     }
-    void addCurrentMarker(){int p=noteChoice.getSelectedId()-1;if(p<0||p>=12)return;double t=preview.getPlayPosition();{const juce::ScopedLock sl(state->lock);t=juce::jlimit(0.0,state->duration,t);auto& v=state->markers[(size_t)p];v.push_back(t);std::sort(v.begin(),v.end());}saveMarkers();markProjectDirty();timeline.repaint();}
+    void addCurrentMarker(){int p=noteChoice.getSelectedId()-1;if(p<0||p>=12)return;double t=outputWindow?outputWindow->videoPosition():0.0;{const juce::ScopedLock sl(state->lock);t=juce::jlimit(0.0,state->duration,t);auto& v=state->markers[(size_t)p];v.push_back(t);std::sort(v.begin(),v.end());}saveMarkers();markProjectDirty();timeline.repaint();}
     void saveMarkers(){const juce::ScopedLock sl(state->lock);for(int i=0;i<12;++i)settings->setValue("markers"+juce::String(i),markerString(state->markers[(size_t)i]));settings->saveIfNeeded();markProjectDirty();}
     void refreshMidi(){ins=router.inputs();outs=router.outputs();inputBox.clear();outputBox.clear();inputBox.addItem("Choisir une entrée...",1);outputBox.addItem("Choisir une sortie...",1);for(int i=0;i<ins.size();++i)inputBox.addItem(ins.getReference(i).name,i+2);for(int i=0;i<outs.size();++i)outputBox.addItem(outs.getReference(i).name,i+2);
         auto si=settings->getValue("input"),so=settings->getValue("output");for(int i=0;i<ins.size();++i)if(ins.getReference(i).identifier==si)inputBox.setSelectedId(i+2,juce::dontSendNotification);for(int i=0;i<outs.size();++i)if(outs.getReference(i).identifier==so)outputBox.setSelectedId(i+2,juce::dontSendNotification);}
     void selectInput(){int i=inputBox.getSelectedId()-2;if(i>=0&&i<ins.size()){auto d=ins.getReference(i);router.openInput(d.identifier);settings->setValue("input",d.identifier);settings->saveIfNeeded();}}
     void selectOutput(){int i=outputBox.getSelectedId()-2;if(i>=0&&i<outs.size()){auto d=outs.getReference(i);router.openOutput(d.identifier);settings->setValue("output",d.identifier);settings->saveIfNeeded();}}
-    std::shared_ptr<VideoState> state;MidiRouter router;vlcplayer::VideoView preview;MarkerTimeline timeline;
+    std::shared_ptr<VideoState> state;MidiRouter router;MarkerTimeline timeline;
     ReadableLookAndFeel readableLookAndFeel;
     juce::TextButton newProject,openProject,saveProject,saveAsProject;
     juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
