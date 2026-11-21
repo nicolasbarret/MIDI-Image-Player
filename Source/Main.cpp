@@ -2,6 +2,7 @@
 #include "LibVlcPlayer.h"
 #include <array>
 #include <vector>
+#include <deque>
 #include <memory>
 #include <algorithm>
 #include <cmath>
@@ -18,11 +19,11 @@ struct VideoState {
     juce::CriticalSection lock;
     juce::File file;
     std::array<std::vector<double>,12> markers;
-    double duration=0.0, playhead=0.0, fadeSeconds=0.6;
-    int pitch=-1;
-    bool held=false, freezeOnRelease=true;
+    double duration=0.0, playhead=0.0;
+    bool held=false;
+    int activeMidiNote=-1;
     double releaseMs=0.0;
-    juce::uint64 triggerSerial=0;
+    std::deque<double> pendingTriggers;
 };
 static juce::String markerString(const std::vector<double>& v) {
     juce::StringArray a; for(double x:v) a.add(juce::String(x,6)); return a.joinIntoString(",");
@@ -46,15 +47,23 @@ private:
         if(output) output->sendMessageNow(m);
         const juce::ScopedLock sl(state->lock);
         if(m.isNoteOn()) {
-            int p=m.getNoteNumber()%12; auto& list=state->markers[(size_t)p];
+            const int midiNote=m.getNoteNumber();
+            const int p=midiNote%12;
+            auto& list=state->markers[(size_t)p];
             if(!list.empty()) {
                 double chosen=list.front(), best=std::abs(chosen-state->playhead);
                 for(double t:list){double d=std::abs(t-state->playhead);if(d<best){best=d;chosen=t;}}
-                state->pitch=p; state->held=true; state->releaseMs=0.0; ++state->triggerSerial;
+                state->activeMidiNote=midiNote;
+                state->held=true;
+                state->releaseMs=0.0;
                 state->playhead=chosen;
+                state->pendingTriggers.push_back(chosen);
+                while(state->pendingTriggers.size()>32) state->pendingTriggers.pop_front();
             }
-        } else if(m.isNoteOff() && state->pitch==m.getNoteNumber()%12) {
-            state->held=false; state->releaseMs=juce::Time::getMillisecondCounterHiRes();
+        } else if(m.isNoteOff() && state->activeMidiNote==m.getNoteNumber()) {
+            state->activeMidiNote=-1;
+            state->held=false;
+            state->releaseMs=juce::Time::getMillisecondCounterHiRes();
         }
     }
     std::shared_ptr<VideoState> state;
@@ -68,11 +77,14 @@ public:
     std::function<void()> changed;
     std::function<void(double)> seeked;
     void setDuration(double d){duration=juce::jmax(0.01,d);repaint();}
+    void setWaveform(std::vector<float> peaks){waveform=std::move(peaks);repaint();}
     void setEraseMode(bool enabled){eraseMode=enabled;setMouseCursor(enabled?juce::MouseCursor::CrosshairCursor:juce::MouseCursor::PointingHandCursor);repaint();}
     void paint(juce::Graphics& g) override {
         g.fillAll(juce::Colour(0xff171a20));
         auto r=getLocalBounds().toFloat(); float left=48.0f, right=12.0f, top=5.0f;
-        float trackH=(r.getHeight()-top-4.0f)/12.0f; 
+        const float waveH=54.0f;
+        const float trackArea=r.getHeight()-top-waveH-5.0f;
+        float trackH=trackArea/12.0f;
         g.setFont(12.0f);
         for(int i=0;i<12;++i){
             float y=top+i*trackH;
@@ -88,15 +100,41 @@ public:
                 g.drawLine(x,y+trackH-5,x,y+trackH-1,1.0f);
             }
         }
+        const float waveY=top+trackArea+5.0f;
+        g.setColour(juce::Colour(0xff111820));
+        g.fillRoundedRectangle(left,waveY,r.getWidth()-left-right,waveH-2.0f,4.0f);
+        g.setColour(juce::Colour(0xff65c6d8).withAlpha(0.9f));
+        if(!waveform.empty()) {
+            const float mid=waveY+(waveH-2.0f)*0.5f;
+            const float half=(waveH-10.0f)*0.5f;
+            const float dx=(r.getWidth()-left-right)/(float)waveform.size();
+            for(size_t i=0;i<waveform.size();++i) {
+                const float x=left+((float)i+0.5f)*dx;
+                const float h=juce::jlimit(1.0f,half,waveform[i]*half);
+                g.drawVerticalLine((int)x,mid-h,mid+h);
+            }
+        } else {
+            g.setColour(juce::Colours::white.withAlpha(0.45f));
+            g.drawText("Forme d'onde audio en attente", (int)left,(int)waveY,(int)(r.getWidth()-left-right),(int)waveH,juce::Justification::centred);
+        }
         g.setColour(juce::Colours::white.withAlpha(0.45f));
         float px=left+(float)(juce::jlimit(0.0,duration,state->playhead)/duration)*(r.getWidth()-left-right);
-        g.drawLine(px,top,px,r.getHeight()-2,1.3f);
+        g.drawLine(px,top,px,waveY+waveH-2.0f,1.3f);
     }
     void mouseDown(const juce::MouseEvent& e) override {
         auto r=getLocalBounds().toFloat(); float left=48.0f,right=12.0f,top=5.0f;
-        float th=(r.getHeight()-top-4.0f)/12.0f;
-        int row=juce::jlimit(0,11,(int)((e.position.y-top)/th));
+        const float waveH=54.0f;
+        const float trackArea=r.getHeight()-top-waveH-5.0f;
+        float th=trackArea/12.0f;
         float x=e.position.x; double clicked=(x-left)/juce::jmax(1.0f,r.getWidth()-left-right)*duration;
+        if(e.position.y>=top+trackArea) {
+            clicked=juce::jlimit(0.0,duration,clicked);
+            {const juce::ScopedLock sl(state->lock);state->playhead=clicked;}
+            if(seeked)seeked(clicked);
+            repaint();
+            return;
+        }
+        int row=juce::jlimit(0,11,(int)((e.position.y-top)/th));
         dragRow=row; dragIndex=-1; double best=0.45;
         {const juce::ScopedLock sl(state->lock);auto& v=state->markers[(size_t)row];
          for(size_t i=0;i<v.size();++i){double dx=std::abs(v[i]-clicked);if(dx<best){best=dx;dragIndex=(int)i;}}}
@@ -120,7 +158,7 @@ private:
         if(dragIndex>=0&&dragIndex<(int)v.size()){v[(size_t)dragIndex]=juce::jlimit(0.0,duration,t);}
         repaint();
     }
-    std::shared_ptr<VideoState> state;double duration=60.0;bool dragging=false,eraseMode=false;int dragRow=-1,dragIndex=-1;
+    std::shared_ptr<VideoState> state;double duration=60.0;bool dragging=false,eraseMode=false;int dragRow=-1,dragIndex=-1;std::vector<float> waveform;
 };
 
 class VideoOutputView final : public juce::Component, private juce::Timer {
@@ -165,18 +203,22 @@ private:
     }
     void timerCallback() override {
         syncFile();
-        juce::uint64 serial;bool held,freeze;double release,fade;
-        {const juce::ScopedLock sl(state->lock);serial=state->triggerSerial;held=state->held;freeze=state->freezeOnRelease;release=state->releaseMs;fade=state->fadeSeconds;}
-        if(serial!=seenSerial&&serial!=0){seenSerial=serial;double start=0;{const juce::ScopedLock sl(state->lock);start=state->playhead;}video.setPlayPosition(start);video.setBlackoutAlpha(0);video.play();fading=false;}
-        if(seenSerial!=0&&!held&&release>0.0){
-            if(!fading){fading=true;fadeStart=release;if(freeze)video.stop();}
-            double elapsed=juce::Time::getMillisecondCounterHiRes()-fadeStart;
-            float a=fade<=0.0?0.0f:(float)juce::jlimit(0.0,1.0,1.0-elapsed/(fade*1000.0));
-            video.setBlackoutAlpha((int)((1.0f-a)*255.0f));
-            if(a<=0.001f){video.stop();video.setBlackoutAlpha(255);fading=false;seenSerial=0;const juce::ScopedLock sl(state->lock);state->pitch=-1;state->releaseMs=0.0;}
+        std::deque<double> triggers;
+        bool held=false;
+        double release=0.0;
+        {const juce::ScopedLock sl(state->lock);triggers.swap(state->pendingTriggers);held=state->held;release=state->releaseMs;}
+        for(double start:triggers) {
+            video.setPlayPosition(start);
+            video.setBlackoutAlpha(0);
+            video.play();
+        }
+        if(!held && release>0.0) {
+            video.stop();
+            const juce::ScopedLock sl(state->lock);
+            state->releaseMs=0.0;
         }
     }
-    std::shared_ptr<VideoState> state;vlcplayer::VideoView video;juce::File loadedFile;juce::uint64 seenSerial=0;bool fading=false,loadSucceeded=false;double fadeStart=0.0;
+    std::shared_ptr<VideoState> state;vlcplayer::VideoView video;juce::File loadedFile;bool loadSucceeded=false;
 };
 
 class OutputWindow final : public juce::DocumentWindow {
@@ -203,7 +245,7 @@ public:
         settings=std::make_unique<juce::PropertiesFile>(o);
         auto path=settings->getValue("video");if(path.isNotEmpty()){juce::File f(path);if(f.existsAsFile())loadVideo(f);}
         for(int i=0;i<12;++i){auto key="markers"+juce::String(i);state->markers[(size_t)i]=parseMarkers(settings->getValue(key));}
-        state->fadeSeconds=settings->getDoubleValue("fade",0.6);state->freezeOnRelease=settings->getBoolValue("freeze",true);
+
         addAndMakeVisible(timeline);videoStatus.setColour(juce::Label::textColourId,juce::Colours::white);videoStatus.setText("Aucune vidéo chargée",juce::dontSendNotification);
         setLookAndFeel(&readableLookAndFeel);
         addAndMakeVisible(newProject);addAndMakeVisible(openProject);addAndMakeVisible(saveProject);addAndMakeVisible(saveAsProject);
@@ -214,7 +256,7 @@ public:
         saveAsProject.setButtonText("Enregistrer sous");saveAsProject.onClick=[this]{chooseProjectToSave();};
         for(auto* b:{&newProject,&openProject,&saveProject,&saveAsProject,&openVideo,&play,&addMarker,&eraseMarker,&refresh,&outputButton}) b->setColour(juce::TextButton::buttonColourId,juce::Colour(0xff354252));
         addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
-        addAndMakeVisible(modeLabel);addAndMakeVisible(modeBox);addAndMakeVisible(fadeLabel);addAndMakeVisible(fadeSlider);addAndMakeVisible(outputButton);
+        addAndMakeVisible(outputButton);
         openVideo.setButtonText("Ouvrir une vidéo");openVideo.onClick=[this]{chooseVideo();};
         play.setButtonText("Lire / Pause");play.onClick=[this]{ensureOutputWindow();if(outputWindow->isVideoPlaying()){outputWindow->pauseVideo();videoStatus.setText("Lecture en pause",juce::dontSendNotification);}else{outputWindow->setVisible(true);outputWindow->toFront(true);auto result=outputWindow->playVideo();videoStatus.setText("Diagnostic VLC : "+result,juce::dontSendNotification);}};
         addMarker.setButtonText("Ajouter un repère à la position");addMarker.onClick=[this]{addCurrentMarker();};
@@ -224,10 +266,7 @@ public:
         timeline.changed=[this]{saveMarkers();};
         timeline.seeked=[this](double t){if(outputWindow)outputWindow->seekVideo(t);};
         inputLabel.setText("Entrée MIDI",juce::dontSendNotification);outputLabel.setText("Sortie MIDI (loopMIDI)",juce::dontSendNotification);
-        modeLabel.setText("Au relâchement",juce::dontSendNotification);modeBox.addItem("Figer la dernière image puis fondu",1);modeBox.addItem("Continuer la vidéo pendant le fondu",2);
-        modeBox.setSelectedId(state->freezeOnRelease?1:2);modeBox.onChange=[this]{const juce::ScopedLock sl(state->lock);state->freezeOnRelease=modeBox.getSelectedId()==1;settings->setValue("freeze",state->freezeOnRelease);settings->saveIfNeeded();};
-        fadeLabel.setText("Durée du fondu",juce::dontSendNotification);fadeSlider.setRange(0,5,0.05);fadeSlider.setValue(state->fadeSeconds);fadeSlider.setTextBoxStyle(juce::Slider::TextBoxRight,false,65,22);fadeSlider.setTextValueSuffix(" s");
-        fadeSlider.onValueChange=[this]{const juce::ScopedLock sl(state->lock);state->fadeSeconds=fadeSlider.getValue();settings->setValue("fade",state->fadeSeconds);settings->saveIfNeeded();};
+
         refresh.setButtonText("Actualiser");refresh.onClick=[this]{refreshMidi();};inputBox.onChange=[this]{selectInput();};outputBox.onChange=[this]{selectOutput();};
         outputButton.setButtonText("Ouvrir la sortie vidéo OBS");outputButton.onClick=[this]{ensureOutputWindow();outputWindow->setVisible(true);outputWindow->toFront(true);};
         refreshMidi();setSize(1120,850);
@@ -254,9 +293,8 @@ public:
         inputLabel.setBounds(controls.removeFromTop(20));inputBox.setBounds(controls.removeFromTop(28));controls.removeFromTop(5);
         outputLabel.setBounds(controls.removeFromTop(20));outputBox.setBounds(controls.removeFromTop(28));refresh.setBounds(controls.removeFromTop(30));
         a.removeFromTop(8);auto timelineHead=a.removeFromTop(32);addMarker.setBounds(timelineHead.removeFromLeft(245));timelineHead.removeFromLeft(8);eraseMarker.setBounds(timelineHead.removeFromLeft(180));timelineHead.removeFromLeft(8);noteChoice.setBounds(timelineHead.removeFromLeft(110));
-        timeline.setBounds(a.removeFromTop(250));a.removeFromTop(8);
-        auto opts=a.removeFromTop(34);modeLabel.setBounds(opts.removeFromLeft(115));modeBox.setBounds(opts.removeFromLeft(300));opts.removeFromLeft(15);fadeLabel.setBounds(opts.removeFromLeft(100));fadeSlider.setBounds(opts.removeFromLeft(180));
-        a.removeFromTop(10);outputButton.setBounds(a.removeFromTop(38).withWidth(250));
+        timeline.setBounds(a.removeFromTop(310));a.removeFromTop(8);
+        outputButton.setBounds(a.removeFromTop(38).withWidth(250));
     }
 private:
     double lastTimelineDuration=0.0;
@@ -288,7 +326,7 @@ private:
     void loadVideo(const juce::File& f){
         videoStatus.setText("Chargement de : "+f.getFileName(),juce::dontSendNotification);
         if(f.existsAsFile()){
-            {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=0.0;state->playhead=0.0;state->held=false;state->releaseMs=0.0;++state->triggerSerial;}
+            {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=0.0;state->playhead=0.0;state->held=false;state->activeMidiNote=-1;state->releaseMs=0.0;state->pendingTriggers.clear();}
             timeline.setDuration(60.0);timeline.repaint();
             ensureOutputWindow();
             outputWindow->setVisible(true);outputWindow->toFront(true);
@@ -306,8 +344,6 @@ private:
         const juce::ScopedLock sl(state->lock);
         obj->setProperty("formatVersion",1);
         obj->setProperty("video",state->file.getFullPathName());
-        obj->setProperty("fadeSeconds",state->fadeSeconds);
-        obj->setProperty("freezeOnRelease",state->freezeOnRelease);
         obj->setProperty("midiInput",settings->getValue("input"));
         obj->setProperty("midiOutput",settings->getValue("output"));
         juce::Array<juce::var> all;
@@ -349,15 +385,11 @@ private:
         {
             const juce::ScopedLock sl(state->lock);
             for(int i=0;i<12;++i) state->markers[(size_t)i]=(markers.isArray()&&i<markers.size())?parseMarkers(markers[i].toString()):std::vector<double>{};
-            state->fadeSeconds=(double)obj->getProperty("fadeSeconds");
-            state->freezeOnRelease=(bool)obj->getProperty("freezeOnRelease");
             videoPath=obj->getProperty("video").toString();
-            state->playhead=0.0;state->held=false;state->pitch=-1;
+            state->playhead=0.0;state->held=false;state->activeMidiNote=-1;
         }
-        settings->setValue("fade",state->fadeSeconds);settings->setValue("freeze",state->freezeOnRelease);
         settings->setValue("input",obj->getProperty("midiInput").toString());settings->setValue("output",obj->getProperty("midiOutput").toString());
         settings->saveIfNeeded();currentProject=(file==recoveryProjectFile()?juce::File{}:file);projectDirty=false;
-        fadeSlider.setValue(state->fadeSeconds,juce::dontSendNotification);modeBox.setSelectedId(state->freezeOnRelease?1:2,juce::dontSendNotification);
         auto videoFile=juce::File(videoPath);
         if(videoFile.existsAsFile()) loadVideo(videoFile); else {const juce::ScopedLock sl(state->lock);state->file=videoFile;videoStatus.setText("Vidéo introuvable : "+videoPath,juce::dontSendNotification);}
         timeline.setDuration(state->duration>0.0?state->duration:60.0);timeline.repaint();refreshMidi();
@@ -366,11 +398,11 @@ private:
         else videoStatus.setText("Projet chargé : "+file.getFileName(),juce::dontSendNotification);
     }
     void newProjectAction(){
-        {const juce::ScopedLock sl(state->lock);for(auto& m:state->markers)m.clear();state->file={};state->duration=0;state->playhead=0;state->pitch=-1;state->held=false;}
-        if(outputWindow)outputWindow->stopVideo();{const juce::ScopedLock sl(state->lock);state->file={};state->duration=0.0;state->playhead=0.0;++state->triggerSerial;}timeline.setDuration(60.0);timeline.repaint();currentProject={};projectDirty=true;
+        {const juce::ScopedLock sl(state->lock);for(auto& m:state->markers)m.clear();state->file={};state->duration=0;state->playhead=0;state->activeMidiNote=-1;state->held=false;state->pendingTriggers.clear();}
+        if(outputWindow)outputWindow->stopVideo();{const juce::ScopedLock sl(state->lock);state->file={};state->duration=0.0;state->playhead=0.0;}timeline.setDuration(60.0);timeline.repaint();currentProject={};projectDirty=true;
         videoStatus.setText("Nouveau projet",juce::dontSendNotification);writeRecoveryProject();
     }
-    void addCurrentMarker(){int p=noteChoice.getSelectedId()-1;if(p<0||p>=12)return;double t=outputWindow?outputWindow->videoPosition():0.0;{const juce::ScopedLock sl(state->lock);t=juce::jlimit(0.0,state->duration,t);auto& v=state->markers[(size_t)p];v.push_back(t);std::sort(v.begin(),v.end());}saveMarkers();markProjectDirty();timeline.repaint();}
+    void addCurrentMarker(){int p=noteChoice.getSelectedId()-1;if(p<0||p>=12)return;double t=outputWindow?outputWindow->videoPosition():0.0;{const juce::ScopedLock sl(state->lock);t=juce::jlimit(0.0,state->duration,t);auto& v=state->markers[(size_t)p];v.clear();v.push_back(t);}saveMarkers();markProjectDirty();timeline.repaint();}
     void saveMarkers(){const juce::ScopedLock sl(state->lock);for(int i=0;i<12;++i)settings->setValue("markers"+juce::String(i),markerString(state->markers[(size_t)i]));settings->saveIfNeeded();markProjectDirty();}
     void refreshMidi(){ins=router.inputs();outs=router.outputs();inputBox.clear();outputBox.clear();inputBox.addItem("Choisir une entrée...",1);outputBox.addItem("Choisir une sortie...",1);for(int i=0;i<ins.size();++i)inputBox.addItem(ins.getReference(i).name,i+2);for(int i=0;i<outs.size();++i)outputBox.addItem(outs.getReference(i).name,i+2);
         auto si=settings->getValue("input"),so=settings->getValue("output");for(int i=0;i<ins.size();++i)if(ins.getReference(i).identifier==si)inputBox.setSelectedId(i+2,juce::dontSendNotification);for(int i=0;i<outs.size();++i)if(outs.getReference(i).identifier==so)outputBox.setSelectedId(i+2,juce::dontSendNotification);}
