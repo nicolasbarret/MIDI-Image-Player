@@ -1,4 +1,5 @@
 #include <JuceHeader.h>
+#include "LibVlcPlayer.h"
 #include <array>
 #include <vector>
 #include <memory>
@@ -124,7 +125,7 @@ private:
 
 class VideoOutputView final : public juce::Component, private juce::Timer {
 public:
-    explicit VideoOutputView(std::shared_ptr<VideoState> s):state(std::move(s)),video(false){
+    explicit VideoOutputView(std::shared_ptr<VideoState> s):state(std::move(s)){
         addAndMakeVisible(video);startTimerHz(30);
     }
     void resized() override {video.setBounds(getLocalBounds());}
@@ -135,19 +136,19 @@ private:
         {const juce::ScopedLock sl(state->lock);file=state->file;serial=state->triggerSerial;held=state->held;freeze=state->freezeOnRelease;release=state->releaseMs;fade=state->fadeSeconds;}
         if(file!=loadedFile){
             loadedFile=file;video.stop();video.closeVideo();seenSerial=0;fading=false;
-            if(file.existsAsFile()){auto result=video.load(file);if(result.wasOk()){video.setPlayPosition(0.0);video.setAlpha(1.0f);}else video.setAlpha(1.0f);}
-            else video.setAlpha(1.0f);
+            if(file.existsAsFile()){if(video.load(file)){video.setPlayPosition(0.0);video.setBlackoutAlpha(0);}else video.setBlackoutAlpha(0);}
+            else video.setBlackoutAlpha(0);
         }
-        if(serial!=seenSerial&&serial!=0){seenSerial=serial;double start=0;{const juce::ScopedLock sl(state->lock);start=state->playhead;}video.setPlayPosition(start);video.setAlpha(1.0f);video.play();fading=false;}
+        if(serial!=seenSerial&&serial!=0){seenSerial=serial;double start=0;{const juce::ScopedLock sl(state->lock);start=state->playhead;}video.setPlayPosition(start);video.setBlackoutAlpha(0);video.play();fading=false;}
         if(seenSerial!=0&&!held&&release>0.0){
             if(!fading){fading=true;fadeStart=release;if(freeze)video.stop();}
             double elapsed=juce::Time::getMillisecondCounterHiRes()-fadeStart;
             float a=fade<=0.0?0.0f:(float)juce::jlimit(0.0,1.0,1.0-elapsed/(fade*1000.0));
-            video.setAlpha(a);
-            if(a<=0.001f){video.stop();video.setAlpha(0.0f);fading=false;seenSerial=0;const juce::ScopedLock sl(state->lock);state->pitch=-1;state->releaseMs=0.0;}
+            video.setBlackoutAlpha((int)((1.0f-a)*255.0f));
+            if(a<=0.001f){video.stop();video.setBlackoutAlpha(255);fading=false;seenSerial=0;const juce::ScopedLock sl(state->lock);state->pitch=-1;state->releaseMs=0.0;}
         }
     }
-    std::shared_ptr<VideoState> state;juce::VideoComponent video;juce::File loadedFile;juce::uint64 seenSerial=0;bool fading=false;double fadeStart=0.0;
+    std::shared_ptr<VideoState> state;vlcplayer::VideoView video;juce::File loadedFile;juce::uint64 seenSerial=0;bool fading=false;double fadeStart=0.0;
 };
 
 class OutputWindow final : public juce::DocumentWindow {
@@ -161,13 +162,13 @@ public:
 
 class MainView final : public juce::Component, private juce::Timer {
 public:
-    MainView():state(std::make_shared<VideoState>()),router(state),preview(false),timeline(state){
+    MainView():state(std::make_shared<VideoState>()),router(state),timeline(state){
         juce::PropertiesFile::Options o;o.applicationName="MIDI Video Player";o.filenameSuffix="settings";o.folderName="MIDI Video Player";
         settings=std::make_unique<juce::PropertiesFile>(o);
         auto path=settings->getValue("video");if(path.isNotEmpty()){juce::File f(path);if(f.existsAsFile())loadVideo(f);}
         for(int i=0;i<12;++i){auto key="markers"+juce::String(i);state->markers[(size_t)i]=parseMarkers(settings->getValue(key));}
         state->fadeSeconds=settings->getDoubleValue("fade",0.6);state->freezeOnRelease=settings->getBoolValue("freeze",true);
-        addAndMakeVisible(preview);addAndMakeVisible(timeline);preview.setOpaque(true);videoStatus.setColour(juce::Label::textColourId,juce::Colours::white);videoStatus.setText("Aucune vidéo chargée",juce::dontSendNotification);
+        addAndMakeVisible(preview);addAndMakeVisible(timeline);preview.setOpaque(true);preview.setMuted(true);videoStatus.setColour(juce::Label::textColourId,juce::Colours::white);videoStatus.setText("Aucune vidéo chargée",juce::dontSendNotification);
         setLookAndFeel(&readableLookAndFeel);
         addAndMakeVisible(newProject);addAndMakeVisible(openProject);addAndMakeVisible(saveProject);addAndMakeVisible(saveAsProject);
         addAndMakeVisible(openVideo);addAndMakeVisible(play);addAndMakeVisible(addMarker);addAndMakeVisible(eraseMarker);addAndMakeVisible(noteChoice);addAndMakeVisible(videoStatus);
@@ -230,15 +231,14 @@ private:
     }
     void chooseVideo(){chooser=std::make_unique<juce::FileChooser>("Choisir une vidéo",juce::File(),"*.mp4;*.mov;*.m4v;*.avi;*.wmv");chooser->launchAsync(juce::FileBrowserComponent::openMode|juce::FileBrowserComponent::canSelectFiles,[this](const juce::FileChooser& c){auto f=c.getResult();if(f.existsAsFile())loadVideo(f);chooser.reset();});}
     void loadVideo(const juce::File& f){
-        preview.stop();preview.closeVideo();videoStatus.setText("Chargement de : "+f.getFileName(),juce::dontSendNotification);
-        auto result=preview.load(f);
-        if(result.wasOk()){
+        preview.stop();preview.unload();videoStatus.setText("Chargement de : "+f.getFileName(),juce::dontSendNotification);
+        if(preview.load(f)){
             {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=preview.getVideoDuration();state->playhead=0.0;}
             timeline.setDuration(preview.getVideoDuration());preview.setPlayPosition(0.0);preview.play();
             videoStatus.setText("Vidéo chargée : "+f.getFileName(),juce::dontSendNotification);
             settings->setValue("video",f.getFullPathName());settings->saveIfNeeded();
         }else{
-            videoStatus.setText("Erreur vidéo : "+result.getErrorMessage(),juce::dontSendNotification);
+            videoStatus.setText("Erreur vidéo : "+preview.errorMessage(),juce::dontSendNotification);
         }
     }
     juce::File recoveryProjectFile() const {
@@ -311,7 +311,7 @@ private:
     }
     void newProjectAction(){
         {const juce::ScopedLock sl(state->lock);for(auto& m:state->markers)m.clear();state->file={};state->duration=0;state->playhead=0;state->pitch=-1;state->held=false;}
-        preview.stop();preview.closeVideo();timeline.setDuration(60.0);timeline.repaint();currentProject={};projectDirty=true;
+        preview.stop();preview.unload();timeline.setDuration(60.0);timeline.repaint();currentProject={};projectDirty=true;
         videoStatus.setText("Nouveau projet",juce::dontSendNotification);writeRecoveryProject();
     }
     void addCurrentMarker(){int p=noteChoice.getSelectedId()-1;if(p<0||p>=12)return;double t=preview.getPlayPosition();{const juce::ScopedLock sl(state->lock);t=juce::jlimit(0.0,state->duration,t);auto& v=state->markers[(size_t)p];v.push_back(t);std::sort(v.begin(),v.end());}saveMarkers();markProjectDirty();timeline.repaint();}
@@ -320,7 +320,7 @@ private:
         auto si=settings->getValue("input"),so=settings->getValue("output");for(int i=0;i<ins.size();++i)if(ins.getReference(i).identifier==si)inputBox.setSelectedId(i+2,juce::dontSendNotification);for(int i=0;i<outs.size();++i)if(outs.getReference(i).identifier==so)outputBox.setSelectedId(i+2,juce::dontSendNotification);}
     void selectInput(){int i=inputBox.getSelectedId()-2;if(i>=0&&i<ins.size()){auto d=ins.getReference(i);router.openInput(d.identifier);settings->setValue("input",d.identifier);settings->saveIfNeeded();}}
     void selectOutput(){int i=outputBox.getSelectedId()-2;if(i>=0&&i<outs.size()){auto d=outs.getReference(i);router.openOutput(d.identifier);settings->setValue("output",d.identifier);settings->saveIfNeeded();}}
-    std::shared_ptr<VideoState> state;MidiRouter router;juce::VideoComponent preview;MarkerTimeline timeline;
+    std::shared_ptr<VideoState> state;MidiRouter router;vlcplayer::VideoView preview;MarkerTimeline timeline;
     ReadableLookAndFeel readableLookAndFeel;
     juce::TextButton newProject,openProject,saveProject,saveAsProject;
     juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
