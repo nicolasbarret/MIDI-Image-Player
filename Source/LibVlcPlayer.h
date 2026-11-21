@@ -109,7 +109,7 @@ public:
     {
         setOpaque(true);
         player = Api::get().ready() ? Api::get().newPlayer(Api::get().instance) : nullptr;
-        startTimerHz(20);
+        startTimerHz(120);
     }
 
     ~VideoView() override
@@ -183,6 +183,7 @@ public:
             Api::get().setHwnd(player, videoHwnd);
             lastPlayResult = Api::get().play(player);
             pendingPlay = false;
+            if (pendingSeek && isPlaying()) applyPendingSeek();
         }
     }
 
