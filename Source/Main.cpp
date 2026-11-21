@@ -32,7 +32,7 @@ static juce::String markerString(const std::vector<double>& v) {
 static std::vector<double> parseMarkers(const juce::String& s) {
     std::vector<double> v; juce::StringArray a; a.addTokens(s,",",""); a.trim(); a.removeEmptyStrings();
     for(auto& x:a) { double d=x.getDoubleValue(); if(d>=0.0) v.push_back(d); }
-    std::sort(v.begin(),v.end()); return v;
+    std::sort(v.begin(),v.end()); if(v.size()>1) v.resize(1); return v;
 }
 
 class MidiRouter final : private juce::MidiInputCallback {
