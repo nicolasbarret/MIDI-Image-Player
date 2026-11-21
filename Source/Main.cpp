@@ -129,6 +129,7 @@ public:
     }
     void resized() override {video.setBounds(getLocalBounds());}
 private:
+    void markProjectDirty(){projectDirty=true;nextAutoSaveMs=juce::Time::getMillisecondCounter()+1000;}
     void timerCallback() override {
         juce::File file;juce::uint64 serial;bool held,freeze;double release,fade;
         {const juce::ScopedLock sl(state->lock);file=state->file;serial=state->triggerSerial;held=state->held;freeze=state->freezeOnRelease;release=state->releaseMs;fade=state->fadeSeconds;}
