@@ -179,7 +179,7 @@ public:
         addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
         addAndMakeVisible(modeLabel);addAndMakeVisible(modeBox);addAndMakeVisible(fadeLabel);addAndMakeVisible(fadeSlider);addAndMakeVisible(outputButton);
         openVideo.setButtonText("Ouvrir une vidéo");openVideo.onClick=[this]{chooseVideo();};
-        play.setButtonText("Lire / Pause");play.onClick=[this]{if(preview.isPlaying())preview.stop();else preview.play();};
+        play.setButtonText("Lire / Pause");play.onClick=[this]{if(preview.isPlaying()){preview.pause();videoStatus.setText("Lecture en pause",juce::dontSendNotification);}else{preview.play();videoStatus.setText("Commande Lecture envoyée à VLC...",juce::dontSendNotification);}};
         addMarker.setButtonText("Ajouter un repère à la position");addMarker.onClick=[this]{addCurrentMarker();};
         eraseMarker.setButtonText("Gomme désactivée");eraseMarker.setClickingTogglesState(true);eraseMarker.onClick=[this]{bool on=eraseMarker.getToggleState();eraseMarker.setButtonText(on?"Gomme activée : cliquer un repère":"Gomme désactivée");timeline.setEraseMode(on);};
         for(int i=0;i<12;++i)noteChoice.addItem(notes[(size_t)i],i+1);
@@ -236,6 +236,12 @@ private:
             }
             if(duration>0.0 && timelineDurationNeedsUpdate(duration)){lastTimelineDuration=duration;timeline.setDuration(duration);}
             timeline.repaint();
+        }
+        else {
+            juce::File currentVideo;
+            { const juce::ScopedLock sl(state->lock); currentVideo = state->file; }
+            if (currentVideo.existsAsFile() && videoStatus.getText().startsWith("Commande Lecture envoyée"))
+                videoStatus.setText(preview.playbackDiagnostic(), juce::dontSendNotification);
         }
         if(projectDirty && juce::Time::getMillisecondCounter() >= nextAutoSaveMs){
             writeRecoveryProject();projectDirty=false;nextAutoSaveMs=juce::Time::getMillisecondCounter()+3000;
