@@ -205,7 +205,7 @@ class WaveformJob final : public juce::ThreadPoolJob {
 public:
     WaveformJob(juce::File f, std::function<void(std::vector<float>)> cb) : ThreadPoolJob("Audio waveform"), source(std::move(f)), callback(std::move(cb)) {}
     JobStatus runJob() override {
-        std::vector<float> peaks(1800, 0.0f);
+        std::vector<float> peaks(18000, 0.0f);
         auto app=juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory();
         auto ffmpeg=app.getChildFile("ffmpeg.exe");
         auto wav=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("mvp-waveform", ".wav", false);
@@ -221,7 +221,7 @@ public:
                     for(juce::int64 offset=0;offset<total && !shouldExit();offset+=8192) {
                         int count=(int)juce::jmin((juce::int64)8192,total-offset);
                         if(!reader->read(&buffer,0,count,offset,true,false)) break;
-                        for(int i=0;i<count;++i) { int bin=juce::jmin(1799,(int)(((offset+i)*1800)/total)); peaks[(size_t)bin]=juce::jmax(peaks[(size_t)bin],std::abs(buffer.getSample(0,i))); }
+                        for(int i=0;i<count;++i) { int bin=juce::jmin(17999,(int)(((offset+i)*18000)/total)); peaks[(size_t)bin]=juce::jmax(peaks[(size_t)bin],std::abs(buffer.getSample(0,i))); }
                     }
                     float maximum=0.0f; for(float p:peaks) maximum=juce::jmax(maximum,p);
                     if(maximum>0.0001f) for(auto& p:peaks) p/=maximum;
