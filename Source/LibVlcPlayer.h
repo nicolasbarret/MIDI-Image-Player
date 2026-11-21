@@ -316,25 +316,24 @@ private:
         {
             destroyWindows();
             parentHwnd = parent;
+
+            // La fenêtre de sortie JUCE est déjà une vraie fenêtre Windows.
+            // On la donne directement à VLC : cela évite de créer un HWND enfant
+            // supplémentaire, opération qui échouait sur certaines configurations.
             auto style = GetWindowLongPtrW(parentHwnd, GWL_STYLE);
             SetWindowLongPtrW(parentHwnd, GWL_STYLE, style | WS_CLIPCHILDREN);
-            // LibVLC requires WS_CLIPCHILDREN on the HWND used as its video target.
-            videoHwnd = CreateWindowExW(0, L"STATIC", L"",
-                                        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-                                        0, 0, 1, 1, parentHwnd, nullptr,
-                                        GetModuleHandleW(nullptr), nullptr);
+            videoHwnd = parentHwnd;
+
+            // Le calque noir est facultatif : son échec ne doit jamais bloquer la vidéo.
             blackoutHwnd = CreateWindowExW(WS_EX_LAYERED, L"STATIC", L"",
                                            WS_CHILD | WS_CLIPSIBLINGS,
                                            0, 0, 1, 1, parentHwnd, nullptr,
                                            GetModuleHandleW(nullptr), nullptr);
-            if (!videoHwnd || !blackoutHwnd)
-            {
-                const DWORD error = GetLastError();
-                windowDiagnostic = "Création HWND impossible, erreur Windows " + juce::String((int)error) + ".";
-                destroyWindows();
-                return false;
-            }
-            windowDiagnostic.clear();
+            if (!blackoutHwnd)
+                windowDiagnostic = "VLC utilise la fenêtre de sortie. Le calque de fondu noir n'a pas pu être créé.";
+            else
+                windowDiagnostic.clear();
+
             if (player)
                 Api::get().setHwnd(player, videoHwnd);
             setBlackoutAlpha(blackoutAlpha);
@@ -348,14 +347,13 @@ private:
 
     void positionWindows()
     {
-        if (!parentHwnd || !videoHwnd || !blackoutHwnd)
+        if (!parentHwnd || !blackoutHwnd || !IsWindow(blackoutHwnd))
             return;
         auto screen = getScreenBounds();
         POINT p{ screen.getX(), screen.getY() };
         ScreenToClient(parentHwnd, &p);
         int w = juce::jmax(1, screen.getWidth());
         int h = juce::jmax(1, screen.getHeight());
-        SetWindowPos(videoHwnd, HWND_TOP, p.x, p.y, w, h, SWP_NOACTIVATE);
         SetWindowPos(blackoutHwnd, HWND_TOP, p.x, p.y, w, h, SWP_NOACTIVATE);
         setBlackoutAlpha(blackoutAlpha);
     }
@@ -364,7 +362,7 @@ private:
     {
         if (blackoutHwnd && IsWindow(blackoutHwnd))
             DestroyWindow(blackoutHwnd);
-        if (videoHwnd && IsWindow(videoHwnd))
+        if (videoHwnd && videoHwnd != parentHwnd && IsWindow(videoHwnd))
             DestroyWindow(videoHwnd);
         blackoutHwnd = nullptr;
         videoHwnd = nullptr;
