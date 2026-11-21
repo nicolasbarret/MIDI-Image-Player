@@ -157,7 +157,7 @@ public:
             return;
         }
         int row=juce::jlimit(0,11,(int)((e.position.y-top)/th));
-        dragRow=row; dragIndex=-1; double best=0.45;
+        dragRow=row; dragIndex=-1; double best=visibleDuration()*8.0/juce::jmax(1.0f,r.getWidth()-60.0f);
         {const juce::ScopedLock sl(state->lock);auto& v=state->markers[(size_t)row];
          for(size_t i=0;i<v.size();++i){double dx=std::abs(v[i]-clicked);if(dx<best){best=dx;dragIndex=(int)i;}}}
         if(eraseMode){
