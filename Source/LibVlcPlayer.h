@@ -102,13 +102,14 @@ struct Api
     }
 };
 
-class VideoView final : public juce::Component
+class VideoView final : public juce::Component, private juce::Timer
 {
 public:
     VideoView()
     {
         setOpaque(true);
         player = Api::get().ready() ? Api::get().newPlayer(Api::get().instance) : nullptr;
+        startTimerHz(20);
     }
 
     ~VideoView() override
@@ -207,8 +208,10 @@ public:
 
     void setPlayPosition(double seconds)
     {
-        if (player && media)
-            Api::get().setTime(player, (std::int64_t)(juce::jmax(0.0, seconds) * 1000.0));
+        if (!player || !media) return;
+        pendingSeekMs = (std::int64_t)(juce::jmax(0.0, seconds) * 1000.0);
+        pendingSeek = true;
+        if (isPlaying()) applyPendingSeek();
     }
 
     void setMuted(bool muted)
@@ -248,6 +251,21 @@ public:
     }
 
 private:
+    void timerCallback() override
+    {
+        if (pendingSeek && isPlaying())
+            applyPendingSeek();
+    }
+
+    void applyPendingSeek()
+    {
+        if (player && media && pendingSeek)
+        {
+            Api::get().setTime(player, pendingSeekMs);
+            pendingSeek = false;
+        }
+    }
+
     bool ensureWindows()
     {
         auto* peer = getPeer();
@@ -314,6 +332,8 @@ private:
     HWND videoHwnd = nullptr;
     HWND blackoutHwnd = nullptr;
     BYTE blackoutAlpha = 0;
+    std::int64_t pendingSeekMs = 0;
+    bool pendingSeek = false;
     juce::File loadedFile;
 };
 }
