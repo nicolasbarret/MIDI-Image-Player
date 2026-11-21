@@ -109,11 +109,11 @@ public:
         if(!dragging)return;
         auto r=getLocalBounds().toFloat();double t=(e.position.x-48.0)/juce::jmax(1.0f,r.getWidth()-60.0f)*duration;moveMarker(t);
     }
-    void mouseUp(const juce::MouseEvent&) override {dragging=false;if(changed)changed();}
+    void mouseUp(const juce::MouseEvent&) override {\n        if(dragging && dragRow>=0){const juce::ScopedLock sl(state->lock);auto& v=state->markers[(size_t)dragRow];std::sort(v.begin(),v.end());}\n        dragging=false;dragIndex=-1;if(changed)changed();\n    }
 private:
     void moveMarker(double t){
         const juce::ScopedLock sl(state->lock);auto& v=state->markers[(size_t)dragRow];
-        if(dragIndex>=0&&dragIndex<(int)v.size()){v[(size_t)dragIndex]=juce::jlimit(0.0,duration,t);std::sort(v.begin(),v.end());}
+        if(dragIndex>=0&&dragIndex<(int)v.size()){v[(size_t)dragIndex]=juce::jlimit(0.0,duration,t);}
         repaint();
     }
     std::shared_ptr<VideoState> state;double duration=60.0;bool dragging=false,eraseMode=false;int dragRow=-1,dragIndex=-1;
@@ -300,7 +300,7 @@ private:
         fadeSlider.setValue(state->fadeSeconds,juce::dontSendNotification);modeBox.setSelectedId(state->freezeOnRelease?1:2,juce::dontSendNotification);
         auto videoFile=juce::File(videoPath);
         if(videoFile.existsAsFile()) loadVideo(videoFile); else {const juce::ScopedLock sl(state->lock);state->file=videoFile;videoStatus.setText("Vidéo introuvable : "+videoPath,juce::dontSendNotification);}
-        timeline.repaint();refreshMidi();videoStatus.setText("Projet chargé : "+file.getFileName(),juce::dontSendNotification);
+        timeline.setDuration(state->duration>0.0?state->duration:60.0);timeline.repaint();refreshMidi();\n        if(videoPath.isEmpty()) videoStatus.setText("Projet chargé : aucune vidéo associée",juce::dontSendNotification);\n        else if(!videoFile.existsAsFile()) videoStatus.setText("Projet chargé, vidéo introuvable : "+videoPath,juce::dontSendNotification);\n        else if(preview.getVideoDuration()>0.0) videoStatus.setText("Projet chargé : "+file.getFileName(),juce::dontSendNotification);
     }
     void newProjectAction(){
         {const juce::ScopedLock sl(state->lock);for(auto& m:state->markers)m.clear();state->file={};state->duration=0;state->playhead=0;state->pitch=-1;state->held=false;}
