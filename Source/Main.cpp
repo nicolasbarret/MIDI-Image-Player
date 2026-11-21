@@ -296,7 +296,7 @@ private:
         }
         settings->setValue("fade",state->fadeSeconds);settings->setValue("freeze",state->freezeOnRelease);
         settings->setValue("input",obj->getProperty("midiInput").toString());settings->setValue("output",obj->getProperty("midiOutput").toString());
-        settings->saveIfNeeded();currentProject=file;projectDirty=false;
+        settings->saveIfNeeded();currentProject=(file==recoveryProjectFile()?juce::File{}:file);projectDirty=false;
         fadeSlider.setValue(state->fadeSeconds,juce::dontSendNotification);modeBox.setSelectedId(state->freezeOnRelease?1:2,juce::dontSendNotification);
         auto videoFile=juce::File(videoPath);
         if(videoFile.existsAsFile()) loadVideo(videoFile); else {const juce::ScopedLock sl(state->lock);state->file=videoFile;videoStatus.setText("Vidéo introuvable : "+videoPath,juce::dontSendNotification);}
