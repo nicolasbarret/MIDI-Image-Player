@@ -177,7 +177,7 @@ public:
             viewStart=juce::jlimit(0.0,juce::jmax(0.0,duration-window),viewStart-wheel.deltaY*window*0.30);
         } else {
             const double anchor=xToTime(e.position.x,left,(float)getWidth()-left-right);
-            const double ratio=juce::jlimit(0.0,1.0,(e.position.x-left)/juce::jmax(1.0f,(float)getWidth()-left-right));
+            const double ratio=juce::jlimit(0.0,1.0,(double(e.position.x)-double(left))/juce::jmax(1.0,double(getWidth())-double(left)-double(right)));
             zoom=juce::jlimit(1.0,64.0,zoom*(wheel.deltaY>0.0f?1.25:0.8));
             const double nextWindow=visibleDuration();
             viewStart=juce::jlimit(0.0,juce::jmax(0.0,duration-nextWindow),anchor-ratio*nextWindow);
