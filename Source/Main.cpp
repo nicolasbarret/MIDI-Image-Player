@@ -135,7 +135,7 @@ private:
         juce::File file;juce::uint64 serial;bool held,freeze;double release,fade;
         {const juce::ScopedLock sl(state->lock);file=state->file;serial=state->triggerSerial;held=state->held;freeze=state->freezeOnRelease;release=state->releaseMs;fade=state->fadeSeconds;}
         if(file!=loadedFile){
-            loadedFile=file;video.stop();video.closeVideo();seenSerial=0;fading=false;
+            loadedFile=file;video.stop();video.unload();seenSerial=0;fading=false;
             if(file.existsAsFile()){if(video.load(file)){video.setPlayPosition(0.0);video.setBlackoutAlpha(0);}else video.setBlackoutAlpha(0);}
             else video.setBlackoutAlpha(0);
         }
