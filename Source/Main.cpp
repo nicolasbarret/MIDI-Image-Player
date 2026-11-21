@@ -190,8 +190,6 @@ private:
             video.stop();
             video.unload();
             loadedFile = file;
-            seenSerial = 0;
-            fading = false;
             loadSucceeded = file.existsAsFile() && video.load(file);
             if (loadSucceeded) {
                 video.setPlayPosition(0.0);
@@ -412,7 +410,7 @@ private:
     ReadableLookAndFeel readableLookAndFeel;
     juce::TextButton newProject,openProject,saveProject,saveAsProject;
     juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
-    juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton;juce::ComboBox noteChoice,inputBox,outputBox,modeBox;juce::Label inputLabel,outputLabel,modeLabel,fadeLabel,videoStatus;juce::Slider fadeSlider;juce::Array<juce::MidiDeviceInfo> ins,outs;
+    juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton;juce::ComboBox noteChoice,inputBox,outputBox;juce::Label inputLabel,outputLabel,videoStatus;juce::Array<juce::MidiDeviceInfo> ins,outs;
 };
 
 class MainWindow final : public juce::DocumentWindow {
