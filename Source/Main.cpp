@@ -158,7 +158,14 @@ public:
         for(int i=0;i<12;++i){auto key="markers"+juce::String(i);state->markers[(size_t)i]=parseMarkers(settings->getValue(key));}
         state->fadeSeconds=settings->getDoubleValue("fade",0.6);state->freezeOnRelease=settings->getBoolValue("freeze",true);
         addAndMakeVisible(preview);addAndMakeVisible(timeline);preview.setOpaque(true);videoStatus.setColour(juce::Label::textColourId,juce::Colours::white);videoStatus.setText("Aucune vidéo chargée",juce::dontSendNotification);
+        setLookAndFeel(&readableLookAndFeel);
+        addAndMakeVisible(newProject);addAndMakeVisible(openProject);addAndMakeVisible(saveProject);addAndMakeVisible(saveAsProject);
         addAndMakeVisible(openVideo);addAndMakeVisible(play);addAndMakeVisible(addMarker);addAndMakeVisible(eraseMarker);addAndMakeVisible(noteChoice);addAndMakeVisible(videoStatus);
+        newProject.setButtonText("Nouveau projet");newProject.onClick=[this]{newProjectAction();};
+        openProject.setButtonText("Ouvrir projet");openProject.onClick=[this]{chooseProjectToOpen();};
+        saveProject.setButtonText("Enregistrer");saveProject.onClick=[this]{saveProjectAction();};
+        saveAsProject.setButtonText("Enregistrer sous");saveAsProject.onClick=[this]{chooseProjectToSave();};
+        for(auto* b:{&newProject,&openProject,&saveProject,&saveAsProject,&openVideo,&play,&addMarker,&eraseMarker,&refresh,&outputButton}) b->setColour(juce::TextButton::buttonColourId,juce::Colour(0xff354252));
         addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
         addAndMakeVisible(modeLabel);addAndMakeVisible(modeBox);addAndMakeVisible(fadeLabel);addAndMakeVisible(fadeSlider);addAndMakeVisible(outputButton);
         openVideo.setButtonText("Ouvrir une vidéo");openVideo.onClick=[this]{chooseVideo();};
@@ -178,10 +185,16 @@ public:
         outputButton.setButtonText("Ouvrir la sortie vidéo OBS");outputButton.onClick=[this]{if(!outputWindow)outputWindow=std::make_unique<OutputWindow>(state);outputWindow->setVisible(true);outputWindow->toFront(true);};
         refreshMidi();setSize(1120,850);startTimerHz(10);
     }
-    ~MainView() override {outputWindow.reset();if(settings)settings->saveIfNeeded();}
+    ~MainView() override {outputWindow.reset();setLookAndFeel(nullptr);if(settings)settings->saveIfNeeded();}
     void paint(juce::Graphics& g) override {g.fillAll(juce::Colour(0xff202329));g.setColour(juce::Colours::white);g.setFont(juce::Font(22,juce::Font::bold));g.drawText("MIDI VIDEO PLAYER",24,12,getWidth()-48,30,juce::Justification::centredLeft);g.setColour(juce::Colour(0xffb4bdc9));g.setFont(13);g.drawText("Place les marqueurs sur les 12 pistes, puis déclenche-les avec ton clavier MIDI.",24,42,getWidth()-48,22,juce::Justification::centredLeft);}
     void resized() override {
         auto a=getLocalBounds().reduced(22);a.removeFromTop(72);
+        auto projectBar=a.removeFromTop(38);
+        newProject.setBounds(projectBar.removeFromLeft(145));projectBar.removeFromLeft(7);
+        openProject.setBounds(projectBar.removeFromLeft(130));projectBar.removeFromLeft(7);
+        saveProject.setBounds(projectBar.removeFromLeft(115));projectBar.removeFromLeft(7);
+        saveAsProject.setBounds(projectBar.removeFromLeft(145));
+        a.removeFromTop(8);
         auto top=a.removeFromTop(300);auto left=top.removeFromLeft(520);videoStatus.setBounds(left.removeFromTop(22));preview.setBounds(left);auto controls=top.reduced(12,0);
         openVideo.setBounds(controls.removeFromTop(36));controls.removeFromTop(8);play.setBounds(controls.removeFromTop(34));controls.removeFromTop(8);
         inputLabel.setBounds(controls.removeFromTop(20));inputBox.setBounds(controls.removeFromTop(28));controls.removeFromTop(5);
@@ -194,6 +207,9 @@ public:
 private:
     void timerCallback() override {
         if(preview.isPlaying()){double p=preview.getPlayPosition();{const juce::ScopedLock sl(state->lock);state->playhead=p;}timeline.repaint();}
+        if(projectDirty && juce::Time::getMillisecondCounter() >= nextAutoSaveMs){
+            writeRecoveryProject();projectDirty=false;nextAutoSaveMs=juce::Time::getMillisecondCounter()+3000;
+        }
     }
     void chooseVideo(){chooser=std::make_unique<juce::FileChooser>("Choisir une vidéo",juce::File(),"*.mp4;*.mov;*.m4v;*.avi;*.wmv");chooser->launchAsync(juce::FileBrowserComponent::openMode|juce::FileBrowserComponent::canSelectFiles,[this](const juce::FileChooser& c){auto f=c.getResult();if(f.existsAsFile())loadVideo(f);chooser.reset();});}
     void loadVideo(const juce::File& f){
@@ -208,13 +224,83 @@ private:
             videoStatus.setText("Erreur vidéo : "+result.getErrorMessage(),juce::dontSendNotification);
         }
     }
-    void addCurrentMarker(){int p=noteChoice.getSelectedId()-1;if(p<0||p>=12)return;double t=preview.getPlayPosition();{const juce::ScopedLock sl(state->lock);t=juce::jlimit(0.0,state->duration,t);auto& v=state->markers[(size_t)p];v.push_back(t);std::sort(v.begin(),v.end());}saveMarkers();timeline.repaint();}
-    void saveMarkers(){const juce::ScopedLock sl(state->lock);for(int i=0;i<12;++i)settings->setValue("markers"+juce::String(i),markerString(state->markers[(size_t)i]));settings->saveIfNeeded();}
+    juce::File recoveryProjectFile() const {
+        auto dir=juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("MIDI Video Player");
+        dir.createDirectory();return dir.getChildFile("Recovery.mvproj");
+    }
+    juce::var makeProjectData(){
+        auto* obj=new juce::DynamicObject();juce::var root(obj);
+        const juce::ScopedLock sl(state->lock);
+        obj->setProperty("formatVersion",1);
+        obj->setProperty("video",state->file.getFullPathName());
+        obj->setProperty("fadeSeconds",state->fadeSeconds);
+        obj->setProperty("freezeOnRelease",state->freezeOnRelease);
+        obj->setProperty("midiInput",settings->getValue("input"));
+        obj->setProperty("midiOutput",settings->getValue("output"));
+        juce::Array<juce::var> all;
+        for(int i=0;i<12;++i) all.add(markerString(state->markers[(size_t)i]));
+        obj->setProperty("markers",all);
+        return root;
+    }
+    bool writeProjectFile(const juce::File& file){
+        auto json=juce::JSON::toString(makeProjectData(),true);
+        if(!file.replaceWithText(json)) return false;
+        settings->setValue("lastProject",file.getFullPathName());settings->saveIfNeeded();
+        currentProject=file;projectDirty=false;return true;
+    }
+    void writeRecoveryProject(){writeProjectFile(recoveryProjectFile());}
+    void saveProjectAction(){
+        if(currentProject.existsAsFile()){
+            if(writeProjectFile(currentProject)) videoStatus.setText("Projet enregistré : "+currentProject.getFileName(),juce::dontSendNotification);
+        }else chooseProjectToSave();
+    }
+    void chooseProjectToSave(){
+        chooser=std::make_unique<juce::FileChooser>("Enregistrer le projet",juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("Mon projet.mvproj"),"*.mvproj");
+        chooser->launchAsync(juce::FileBrowserComponent::saveMode|juce::FileBrowserComponent::canSelectFiles,[this](const juce::FileChooser& c){
+            auto file=c.getResult();if(file!=juce::File()){if(file.getFileExtension().isEmpty())file=file.withFileExtension(".mvproj");if(writeProjectFile(file))videoStatus.setText("Projet enregistré : "+file.getFileName(),juce::dontSendNotification);}
+            chooser.reset();
+        });
+    }
+    void chooseProjectToOpen(){
+        chooser=std::make_unique<juce::FileChooser>("Ouvrir un projet",juce::File(),"*.mvproj");
+        chooser->launchAsync(juce::FileBrowserComponent::openMode|juce::FileBrowserComponent::canSelectFiles,[this](const juce::FileChooser& c){auto file=c.getResult();if(file.existsAsFile())loadProjectFile(file);chooser.reset();});
+    }
+    void loadProjectFile(const juce::File& file){
+        auto data=juce::JSON::parse(file.loadFileAsString());
+        if(!data.isObject()){videoStatus.setText("Projet illisible ou endommagé",juce::dontSendNotification);return;}
+        auto* obj=data.getDynamicObject();auto markers=obj->getProperty("markers");
+        juce::String videoPath;
+        {
+            const juce::ScopedLock sl(state->lock);
+            for(int i=0;i<12;++i) state->markers[(size_t)i]=(markers.isArray()&&i<markers.size())?parseMarkers(markers[i].toString()):std::vector<double>{};
+            state->fadeSeconds=(double)obj->getProperty("fadeSeconds");
+            state->freezeOnRelease=(bool)obj->getProperty("freezeOnRelease");
+            videoPath=obj->getProperty("video").toString();
+            state->playhead=0.0;state->held=false;state->pitch=-1;
+        }
+        settings->setValue("fade",state->fadeSeconds);settings->setValue("freeze",state->freezeOnRelease);
+        settings->setValue("input",obj->getProperty("midiInput").toString());settings->setValue("output",obj->getProperty("midiOutput").toString());
+        settings->saveIfNeeded();currentProject=file;projectDirty=false;
+        fadeSlider.setValue(state->fadeSeconds,juce::dontSendNotification);modeBox.setSelectedId(state->freezeOnRelease?1:2,juce::dontSendNotification);
+        auto videoFile=juce::File(videoPath);
+        if(videoFile.existsAsFile()) loadVideo(videoFile); else {const juce::ScopedLock sl(state->lock);state->file=videoFile;videoStatus.setText("Vidéo introuvable : "+videoPath,juce::dontSendNotification);}
+        timeline.repaint();refreshMidi();videoStatus.setText("Projet chargé : "+file.getFileName(),juce::dontSendNotification);
+    }
+    void newProjectAction(){
+        {const juce::ScopedLock sl(state->lock);for(auto& m:state->markers)m.clear();state->file={};state->duration=0;state->playhead=0;state->pitch=-1;state->held=false;}
+        preview.stop();preview.closeVideo();timeline.setDuration(60.0);timeline.repaint();currentProject={};projectDirty=true;
+        videoStatus.setText("Nouveau projet",juce::dontSendNotification);writeRecoveryProject();
+    }
+    void addCurrentMarker(){int p=noteChoice.getSelectedId()-1;if(p<0||p>=12)return;double t=preview.getPlayPosition();{const juce::ScopedLock sl(state->lock);t=juce::jlimit(0.0,state->duration,t);auto& v=state->markers[(size_t)p];v.push_back(t);std::sort(v.begin(),v.end());}saveMarkers();markProjectDirty();timeline.repaint();}
+    void saveMarkers(){const juce::ScopedLock sl(state->lock);for(int i=0;i<12;++i)settings->setValue("markers"+juce::String(i),markerString(state->markers[(size_t)i]));settings->saveIfNeeded();markProjectDirty();}
     void refreshMidi(){ins=router.inputs();outs=router.outputs();inputBox.clear();outputBox.clear();inputBox.addItem("Choisir une entrée...",1);outputBox.addItem("Choisir une sortie...",1);for(int i=0;i<ins.size();++i)inputBox.addItem(ins.getReference(i).name,i+2);for(int i=0;i<outs.size();++i)outputBox.addItem(outs.getReference(i).name,i+2);
         auto si=settings->getValue("input"),so=settings->getValue("output");for(int i=0;i<ins.size();++i)if(ins.getReference(i).identifier==si)inputBox.setSelectedId(i+2,juce::dontSendNotification);for(int i=0;i<outs.size();++i)if(outs.getReference(i).identifier==so)outputBox.setSelectedId(i+2,juce::dontSendNotification);}
     void selectInput(){int i=inputBox.getSelectedId()-2;if(i>=0&&i<ins.size()){auto d=ins.getReference(i);router.openInput(d.identifier);settings->setValue("input",d.identifier);settings->saveIfNeeded();}}
     void selectOutput(){int i=outputBox.getSelectedId()-2;if(i>=0&&i<outs.size()){auto d=outs.getReference(i);router.openOutput(d.identifier);settings->setValue("output",d.identifier);settings->saveIfNeeded();}}
-    std::shared_ptr<VideoState> state;MidiRouter router;juce::VideoComponent preview;MarkerTimeline timeline;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
+    std::shared_ptr<VideoState> state;MidiRouter router;juce::VideoComponent preview;MarkerTimeline timeline;
+    juce::LookAndFeel_V4 readableLookAndFeel;
+    juce::TextButton newProject,openProject,saveProject,saveAsProject;
+    juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
     juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton;juce::ComboBox noteChoice,inputBox,outputBox,modeBox;juce::Label inputLabel,outputLabel,modeLabel,fadeLabel,videoStatus;juce::Slider fadeSlider;juce::Array<juce::MidiDeviceInfo> ins,outs;
 };
 
