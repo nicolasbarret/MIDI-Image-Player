@@ -25,6 +25,7 @@ struct VideoState {
     std::array<int,128> activeNoteCounts{};
     double releaseMs=0.0;
     std::deque<double> pendingTriggers;
+    std::function<void()> dispatchPlayback;
 };
 static juce::String markerString(const std::vector<double>& v) {
     juce::StringArray a; for(double x:v) a.add(juce::String(x,6)); return a.joinIntoString(",");
@@ -46,32 +47,40 @@ public:
 private:
     void handleIncomingMidiMessage(juce::MidiInput*,const juce::MidiMessage& m) override {
         if(output) output->sendMessageNow(m);
-        const juce::ScopedLock sl(state->lock);
-        if(m.isNoteOn()) {
-            const int midiNote=m.getNoteNumber();
-            const int p=midiNote%12;
-            auto& list=state->markers[(size_t)p];
-            if(!list.empty()) {
-                double chosen=list.front(), best=std::abs(chosen-state->playhead);
-                for(double t:list){double d=std::abs(t-state->playhead);if(d<best){best=d;chosen=t;}}
-                state->activeMidiNote=midiNote;
-                state->activeNoteCounts[(size_t)midiNote]++;
-                state->held=true;
-                state->releaseMs=0.0;
-                state->playhead=chosen;
-                state->pendingTriggers.push_back(chosen);
-                while(state->pendingTriggers.size()>32) state->pendingTriggers.pop_front();
+        bool dispatch=false;
+        std::function<void()> notify;
+        {
+            const juce::ScopedLock sl(state->lock);
+            if(m.isNoteOn()) {
+                const int midiNote=m.getNoteNumber();
+                const int p=midiNote%12;
+                auto& list=state->markers[(size_t)p];
+                if(!list.empty()) {
+                    double chosen=list.front(), best=std::abs(chosen-state->playhead);
+                    for(double t:list){double d=std::abs(t-state->playhead);if(d<best){best=d;chosen=t;}}
+                    state->activeMidiNote=midiNote;
+                    state->activeNoteCounts[(size_t)midiNote]++;
+                    state->held=true;
+                    state->releaseMs=0.0;
+                    state->playhead=chosen;
+                    state->pendingTriggers.clear();
+                    state->pendingTriggers.push_back(chosen);
+                    dispatch=true;
+                }
+            } else if(m.isNoteOff()) {
+                const int midiNote=m.getNoteNumber();
+                if(midiNote>=0 && midiNote<128 && state->activeNoteCounts[(size_t)midiNote]>0)
+                    --state->activeNoteCounts[(size_t)midiNote];
+                if(state->activeMidiNote==midiNote && state->activeNoteCounts[(size_t)midiNote]==0) {
+                    state->activeMidiNote=-1;
+                    state->held=false;
+                    state->releaseMs=juce::Time::getMillisecondCounterHiRes();
+                    dispatch=true;
+                }
             }
-        } else if(m.isNoteOff()) {
-            const int midiNote=m.getNoteNumber();
-            if(midiNote>=0 && midiNote<128 && state->activeNoteCounts[(size_t)midiNote]>0)
-                --state->activeNoteCounts[(size_t)midiNote];
-            if(state->activeMidiNote==midiNote && state->activeNoteCounts[(size_t)midiNote]==0) {
-                state->activeMidiNote=-1;
-                state->held=false;
-                state->releaseMs=juce::Time::getMillisecondCounterHiRes();
-            }
+            if(dispatch) notify=state->dispatchPlayback;
         }
+        if(notify) notify();
     }
     std::shared_ptr<VideoState> state;
     std::unique_ptr<juce::MidiInput> input;
@@ -83,12 +92,14 @@ public:
     explicit MarkerTimeline(std::shared_ptr<VideoState> s):state(std::move(s)){setMouseCursor(juce::MouseCursor::PointingHandCursor);}
     std::function<void()> changed;
     std::function<void(double)> seeked;
-    void setDuration(double d){duration=juce::jmax(0.01,d);repaint();}
+    void setDuration(double d){duration=juce::jmax(0.01,d);viewStart=juce::jlimit(0.0,juce::jmax(0.0,d-visibleDuration()),viewStart);repaint();}
     void setWaveform(std::vector<float> peaks){waveform=std::move(peaks);repaint();}
     void setEraseMode(bool enabled){eraseMode=enabled;setMouseCursor(enabled?juce::MouseCursor::CrosshairCursor:juce::MouseCursor::PointingHandCursor);repaint();}
     void paint(juce::Graphics& g) override {
         g.fillAll(juce::Colour(0xff171a20));
-        auto r=getLocalBounds().toFloat(); float left=48.0f, right=12.0f, top=5.0f;
+        auto r=getLocalBounds().toFloat(); float left=48.0f, right=12.0f, top=25.0f;
+        g.setColour(juce::Colour(0xffc0c8d2)); g.setFont(12.0f);
+        g.drawText("Zoom x"+juce::String(zoom,1)+"   |   Molette : zoom   |   Maj + molette : déplacement",48,2,(int)r.getWidth()-60,19,juce::Justification::centredLeft);
         const float waveH=54.0f;
         const float trackArea=r.getHeight()-top-waveH-5.0f;
         float trackH=trackArea/12.0f;
@@ -101,7 +112,7 @@ public:
             g.drawText(notes[(size_t)i],2,(int)y,42,(int)trackH,juce::Justification::centredLeft);
             const juce::ScopedLock sl(state->lock);
             for(double t:state->markers[(size_t)i]){
-                float x=left+(float)(juce::jlimit(0.0,duration,t)/duration)*(r.getWidth()-left-right);
+                float x=timeToX(t,left,r.getWidth()-left-right);
                 g.setColour(juce::Colour::fromHSV((float)i/12.0f,0.72f,0.98f,1.0f));
                 juce::Path p;p.addTriangle(x,y+3,x-5,y+trackH-4,x+5,y+trackH-4);g.fillPath(p);
                 g.drawLine(x,y+trackH-5,x,y+trackH-1,1.0f);
@@ -114,9 +125,13 @@ public:
         if(!waveform.empty()) {
             const float mid=waveY+(waveH-2.0f)*0.5f;
             const float half=(waveH-10.0f)*0.5f;
-            const float dx=(r.getWidth()-left-right)/(float)waveform.size();
-            for(size_t i=0;i<waveform.size();++i) {
-                const float x=left+((float)i+0.5f)*dx;
+            const double first=juce::jlimit(0.0,1.0,viewStart/duration);
+            const double last=juce::jlimit(0.0,1.0,(viewStart+visibleDuration())/duration);
+            const size_t begin=(size_t)(first*waveform.size());
+            const size_t finish=juce::jmin(waveform.size(),(size_t)std::ceil(last*waveform.size()));
+            const float dx=(r.getWidth()-left-right)/(float)juce::jmax((size_t)1,finish-begin);
+            for(size_t i=begin;i<finish;++i) {
+                const float x=left+((float)(i-begin)+0.5f)*dx;
                 const float h=juce::jlimit(1.0f,half,waveform[i]*half);
                 g.drawVerticalLine((int)x,mid-h,mid+h);
             }
@@ -125,15 +140,15 @@ public:
             g.drawText("Forme d'onde audio en attente", (int)left,(int)waveY,(int)(r.getWidth()-left-right),(int)waveH,juce::Justification::centred);
         }
         g.setColour(juce::Colours::white.withAlpha(0.45f));
-        float px=left+(float)(juce::jlimit(0.0,duration,state->playhead)/duration)*(r.getWidth()-left-right);
+        float px=timeToX(state->playhead,left,r.getWidth()-left-right);
         g.drawLine(px,top,px,waveY+waveH-2.0f,1.3f);
     }
     void mouseDown(const juce::MouseEvent& e) override {
-        auto r=getLocalBounds().toFloat(); float left=48.0f,right=12.0f,top=5.0f;
+        auto r=getLocalBounds().toFloat(); float left=48.0f,right=12.0f,top=25.0f;
         const float waveH=54.0f;
         const float trackArea=r.getHeight()-top-waveH-5.0f;
         float th=trackArea/12.0f;
-        float x=e.position.x; double clicked=(x-left)/juce::jmax(1.0f,r.getWidth()-left-right)*duration;
+        float x=e.position.x; double clicked=xToTime(x,left,r.getWidth()-left-right);
         if(e.position.y>=top+trackArea) {
             clicked=juce::jlimit(0.0,duration,clicked);
             {const juce::ScopedLock sl(state->lock);state->playhead=clicked;}
@@ -153,19 +168,37 @@ public:
     }
     void mouseDrag(const juce::MouseEvent& e) override {
         if(!dragging)return;
-        auto r=getLocalBounds().toFloat();double t=(e.position.x-48.0)/juce::jmax(1.0f,r.getWidth()-60.0f)*duration;moveMarker(t);
+        auto r=getLocalBounds().toFloat();double t=xToTime(e.position.x,48.0f,r.getWidth()-60.0f);moveMarker(t);
     }
+    void mouseWheelMove(const juce::MouseEvent& e,const juce::MouseWheelDetails& wheel) override {
+        const float left=48.0f, right=12.0f;
+        const double window=visibleDuration();
+        if(e.mods.isShiftDown()) {
+            viewStart=juce::jlimit(0.0,juce::jmax(0.0,duration-window),viewStart-wheel.deltaY*window*0.30);
+        } else {
+            const double anchor=xToTime(e.position.x,left,(float)getWidth()-left-right);
+            const double ratio=juce::jlimit(0.0,1.0,(e.position.x-left)/juce::jmax(1.0f,(float)getWidth()-left-right));
+            zoom=juce::jlimit(1.0,64.0,zoom*(wheel.deltaY>0.0f?1.25:0.8));
+            const double nextWindow=visibleDuration();
+            viewStart=juce::jlimit(0.0,juce::jmax(0.0,duration-nextWindow),anchor-ratio*nextWindow);
+        }
+        repaint();
+    }
+    void mouseDoubleClick(const juce::MouseEvent&) override { zoom=1.0;viewStart=0.0;repaint(); }
     void mouseUp(const juce::MouseEvent&) override {
         if(dragging && dragRow>=0){const juce::ScopedLock sl(state->lock);auto& v=state->markers[(size_t)dragRow];std::sort(v.begin(),v.end());}
         dragging=false;dragIndex=-1;if(changed)changed();
     }
 private:
+    double visibleDuration() const { return duration/zoom; }
+    double xToTime(float x,float left,float width) const { return juce::jlimit(0.0,duration,viewStart+((double)(x-left)/juce::jmax(1.0f,width))*visibleDuration()); }
+    float timeToX(double t,float left,float width) const { return left+(float)((t-viewStart)/visibleDuration())*width; }
     void moveMarker(double t){
         const juce::ScopedLock sl(state->lock);auto& v=state->markers[(size_t)dragRow];
         if(dragIndex>=0&&dragIndex<(int)v.size()){v[(size_t)dragIndex]=juce::jlimit(0.0,duration,t);}
         repaint();
     }
-    std::shared_ptr<VideoState> state;double duration=60.0;bool dragging=false,eraseMode=false;int dragRow=-1,dragIndex=-1;std::vector<float> waveform;
+    std::shared_ptr<VideoState> state;double duration=60.0,zoom=1.0,viewStart=0.0;bool dragging=false,eraseMode=false;int dragRow=-1,dragIndex=-1;std::vector<float> waveform;
 };
 
 class WaveformJob final : public juce::ThreadPoolJob {
@@ -202,10 +235,18 @@ public:
 private:
     juce::File source; std::function<void(std::vector<float>)> callback;
 };
-class VideoOutputView final : public juce::Component, private juce::Timer {
+class VideoOutputView final : public juce::Component, private juce::Timer, private juce::AsyncUpdater {
 public:
     explicit VideoOutputView(std::shared_ptr<VideoState> s):state(std::move(s)){
-        addAndMakeVisible(video);startTimerHz(30);
+        addAndMakeVisible(video);
+        juce::Component::SafePointer<VideoOutputView> safe(this);
+        { const juce::ScopedLock sl(state->lock); state->dispatchPlayback=[safe]() { if(safe) safe->triggerAsyncUpdate(); }; }
+        startTimerHz(30);
+    }
+    ~VideoOutputView() override {
+        cancelPendingUpdate();
+        const juce::ScopedLock sl(state->lock);
+        state->dispatchPlayback={};
     }
     void resized() override {video.setBounds(getLocalBounds());}
     juce::String play() {
@@ -240,13 +281,19 @@ private:
             }
         }
     }
-    void timerCallback() override {
-        syncFile();
+    void timerCallback() override { syncFile(); }
+    void handleAsyncUpdate() override {
         std::deque<double> triggers;
         bool held=false;
         double release=0.0;
-        {const juce::ScopedLock sl(state->lock);triggers.swap(state->pendingTriggers);held=state->held;release=state->releaseMs;}
-        for(double start:triggers) {
+        {
+            const juce::ScopedLock sl(state->lock);
+            triggers.swap(state->pendingTriggers);
+            held=state->held;
+            release=state->releaseMs;
+        }
+        if(!triggers.empty()) {
+            const double start=triggers.back();
             video.setPlayPosition(start);
             video.setBlackoutAlpha(0);
             video.play();
