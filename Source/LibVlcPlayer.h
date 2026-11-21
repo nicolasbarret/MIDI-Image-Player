@@ -273,10 +273,14 @@ public:
 private:
     void timerCallback() override
     {
+        // Retry after JUCE has created the native top-level window.
+        if ((!videoHwnd || !IsWindow(videoHwnd)) && isShowing())
+            ensureWindows();
+
         if (pendingPlay && ensureWindows())
         {
             Api::get().setHwnd(player, videoHwnd);
-            Api::get().play(player);
+            lastPlayResult = Api::get().play(player);
             pendingPlay = false;
         }
         if (pendingSeek && isPlaying())
@@ -294,12 +298,19 @@ private:
 
     bool ensureWindows()
     {
-        auto* peer = getPeer();
+        auto* topLevel = getTopLevelComponent();
+        auto* peer = topLevel != nullptr ? topLevel->getPeer() : nullptr;
         if (!peer)
+        {
+            windowDiagnostic = "Fenêtre vidéo : peer Windows absent.";
             return false;
+        }
         auto parent = (HWND) peer->getNativeHandle();
-        if (!parent)
+        if (!parent || !IsWindow(parent))
+        {
+            windowDiagnostic = "Fenêtre vidéo : handle parent Windows invalide.";
             return false;
+        }
 
         if (parentHwnd != parent || !videoHwnd || !IsWindow(videoHwnd))
         {
@@ -318,15 +329,21 @@ private:
                                            GetModuleHandleW(nullptr), nullptr);
             if (!videoHwnd || !blackoutHwnd)
             {
+                const DWORD error = GetLastError();
+                windowDiagnostic = "Création HWND impossible, erreur Windows " + juce::String((int)error) + ".";
                 destroyWindows();
                 return false;
             }
+            windowDiagnostic.clear();
             if (player)
                 Api::get().setHwnd(player, videoHwnd);
             setBlackoutAlpha(blackoutAlpha);
             positionWindows();
         }
-        return videoHwnd != nullptr;
+        const bool valid = videoHwnd != nullptr && IsWindow(videoHwnd);
+        if (!valid && windowDiagnostic.isEmpty())
+            windowDiagnostic = "Fenêtre vidéo : handle enfant invalide.";
+        return valid;
     }
 
     void positionWindows()
@@ -359,6 +376,7 @@ private:
     HWND parentHwnd = nullptr;
     HWND videoHwnd = nullptr;
     HWND blackoutHwnd = nullptr;
+    juce::String windowDiagnostic;
     BYTE blackoutAlpha = 0;
     std::int64_t pendingSeekMs = 0;
     bool pendingSeek = false;
