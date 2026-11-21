@@ -299,7 +299,9 @@ private:
             video.play();
         }
         if(!held && release>0.0) {
-            video.stop();
+            // Pause instead of stopping: keep LibVLC's decoder and media pipeline
+            // alive so the next MIDI note can resume without a full restart.
+            video.pause();
             const juce::ScopedLock sl(state->lock);
             state->releaseMs=0.0;
         }
