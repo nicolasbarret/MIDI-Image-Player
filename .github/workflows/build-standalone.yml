@@ -28,7 +28,7 @@ jobs:
           Expand-Archive -Path $ffmpegArchive -DestinationPath "ffmpeg-extracted" -Force
           $ffmpegExe = Get-ChildItem -Path "ffmpeg-extracted" -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1
           if (-not $ffmpegExe) { throw "ffmpeg.exe was not found in the FFmpeg archive." }
-          Copy-Item $ffmpegExe.FullName "package/MIDI Video Player/ffmpeg.exe"
+          Copy-Item (Join-Path $ffmpegExe.DirectoryName "*") "package/MIDI Video Player/" -Recurse -Force
 
           # Bundle the official portable VLC runtime so users do not need to install codecs.
           $vlcArchive = "vlc-win64.zip"
