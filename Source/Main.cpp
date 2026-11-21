@@ -366,7 +366,7 @@ private:
     void loadVideo(const juce::File& f){
         videoStatus.setText("Chargement de : "+f.getFileName(),juce::dontSendNotification);
         if(f.existsAsFile()){
-            {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=0.0;state->playhead=0.0;state->held=false;state->activeMidiNote=-1;state->releaseMs=0.0;state->pendingTriggers.clear();}
+            {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=0.0;state->playhead=0.0;state->held=false;state->activeMidiNote=-1;state->activeNoteCounts.fill(0);state->releaseMs=0.0;state->pendingTriggers.clear();}
             timeline.setDuration(60.0);timeline.setWaveform({});timeline.repaint();
             juce::Component::SafePointer<MainView> safe(this);
             waveformJobs.addJob(new WaveformJob(f,[safe](std::vector<float> p){if(safe) safe->setWaveformData(std::move(p));}),true);
@@ -440,7 +440,7 @@ private:
         else videoStatus.setText("Projet chargé : "+file.getFileName(),juce::dontSendNotification);
     }
     void newProjectAction(){
-        {const juce::ScopedLock sl(state->lock);for(auto& m:state->markers)m.clear();state->file={};state->duration=0;state->playhead=0;state->activeMidiNote=-1;state->held=false;state->pendingTriggers.clear();}
+        {const juce::ScopedLock sl(state->lock);for(auto& m:state->markers)m.clear();state->file={};state->duration=0;state->playhead=0;state->activeMidiNote=-1;state->activeNoteCounts.fill(0);state->held=false;state->pendingTriggers.clear();}
         if(outputWindow)outputWindow->stopVideo();{const juce::ScopedLock sl(state->lock);state->file={};state->duration=0.0;state->playhead=0.0;}timeline.setDuration(60.0);timeline.repaint();currentProject={};projectDirty=true;
         videoStatus.setText("Nouveau projet",juce::dontSendNotification);writeRecoveryProject();
     }
