@@ -136,7 +136,7 @@ public:
 
     bool load(const juce::File& file)
     {
-        if (!player || !ensureWindows() || !file.existsAsFile())
+        if (!player || !file.existsAsFile())
             return false;
 
         stop();
@@ -152,7 +152,7 @@ public:
             return false;
 
         Api::get().setMedia(player, media);
-        Api::get().setHwnd(player, videoHwnd);
+        if (ensureWindows()) Api::get().setHwnd(player, videoHwnd);
         loadedFile = file;
         return true;
     }
@@ -166,6 +166,8 @@ public:
             media = nullptr;
         }
         loadedFile = {};
+        pendingPlay = false;
+        pendingSeek = false;
         setBlackoutAlpha(255);
     }
 
@@ -173,9 +175,14 @@ public:
     {
         if (player && media)
         {
-            ensureWindows();
+            if (!ensureWindows())
+            {
+                pendingPlay = true;
+                return;
+            }
             Api::get().setHwnd(player, videoHwnd);
             Api::get().play(player);
+            pendingPlay = false;
         }
     }
 
@@ -253,6 +260,12 @@ public:
 private:
     void timerCallback() override
     {
+        if (pendingPlay && ensureWindows())
+        {
+            Api::get().setHwnd(player, videoHwnd);
+            Api::get().play(player);
+            pendingPlay = false;
+        }
         if (pendingSeek && isPlaying())
             applyPendingSeek();
     }
@@ -334,6 +347,7 @@ private:
     BYTE blackoutAlpha = 0;
     std::int64_t pendingSeekMs = 0;
     bool pendingSeek = false;
+    bool pendingPlay = false;
     juce::File loadedFile;
 };
 }
