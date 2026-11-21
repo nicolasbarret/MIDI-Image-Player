@@ -22,6 +22,7 @@ struct VideoState {
     double duration=0.0, playhead=0.0;
     bool held=false;
     int activeMidiNote=-1;
+    std::array<int,128> activeNoteCounts{};
     double releaseMs=0.0;
     std::deque<double> pendingTriggers;
 };
@@ -54,16 +55,22 @@ private:
                 double chosen=list.front(), best=std::abs(chosen-state->playhead);
                 for(double t:list){double d=std::abs(t-state->playhead);if(d<best){best=d;chosen=t;}}
                 state->activeMidiNote=midiNote;
+                state->activeNoteCounts[(size_t)midiNote]++;
                 state->held=true;
                 state->releaseMs=0.0;
                 state->playhead=chosen;
                 state->pendingTriggers.push_back(chosen);
                 while(state->pendingTriggers.size()>32) state->pendingTriggers.pop_front();
             }
-        } else if(m.isNoteOff() && state->activeMidiNote==m.getNoteNumber()) {
-            state->activeMidiNote=-1;
-            state->held=false;
-            state->releaseMs=juce::Time::getMillisecondCounterHiRes();
+        } else if(m.isNoteOff()) {
+            const int midiNote=m.getNoteNumber();
+            if(midiNote>=0 && midiNote<128 && state->activeNoteCounts[(size_t)midiNote]>0)
+                --state->activeNoteCounts[(size_t)midiNote];
+            if(state->activeMidiNote==midiNote && state->activeNoteCounts[(size_t)midiNote]==0) {
+                state->activeMidiNote=-1;
+                state->held=false;
+                state->releaseMs=juce::Time::getMillisecondCounterHiRes();
+            }
         }
     }
     std::shared_ptr<VideoState> state;
