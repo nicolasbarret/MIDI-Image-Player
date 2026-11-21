@@ -129,7 +129,14 @@ public:
         addAndMakeVisible(video);startTimerHz(30);
     }
     void resized() override {video.setBounds(getLocalBounds());}
-    void play() { video.setBlackoutAlpha(0); video.play(); }
+    juce::String play() {
+        syncFile();
+        if (!loadedFile.existsAsFile()) return "Aucune vidéo chargée dans la Sortie OBS.";
+        if (!video.isAvailable()) return video.errorMessage();
+        video.setBlackoutAlpha(0);
+        video.play();
+        return video.playbackDiagnostic();
+    }
     void pause() { video.pause(); }
     void stop() { video.stop(); }
     bool isPlaying() const { return video.isPlaying(); }
@@ -138,14 +145,28 @@ public:
     double duration() const { return video.getVideoDuration(); }
     juce::String diagnostic() const { return video.playbackDiagnostic(); }
 private:
-    void timerCallback() override {
-        juce::File file;juce::uint64 serial;bool held,freeze;double release,fade;
-        {const juce::ScopedLock sl(state->lock);file=state->file;serial=state->triggerSerial;held=state->held;freeze=state->freezeOnRelease;release=state->releaseMs;fade=state->fadeSeconds;}
-        if(file!=loadedFile){
-            loadedFile=file;video.stop();video.unload();seenSerial=0;fading=false;
-            if(file.existsAsFile()){if(video.load(file)){video.setPlayPosition(0.0);video.setBlackoutAlpha(0);}else video.setBlackoutAlpha(0);}
-            else video.setBlackoutAlpha(0);
+    void syncFile() {
+        juce::File file;
+        { const juce::ScopedLock sl(state->lock); file = state->file; }
+        if (file != loadedFile) {
+            video.stop();
+            video.unload();
+            loadedFile = file;
+            seenSerial = 0;
+            fading = false;
+            loadSucceeded = file.existsAsFile() && video.load(file);
+            if (loadSucceeded) {
+                video.setPlayPosition(0.0);
+                video.setBlackoutAlpha(0);
+            } else {
+                video.setBlackoutAlpha(0);
+            }
         }
+    }
+    void timerCallback() override {
+        syncFile();
+        juce::uint64 serial;bool held,freeze;double release,fade;
+        {const juce::ScopedLock sl(state->lock);serial=state->triggerSerial;held=state->held;freeze=state->freezeOnRelease;release=state->releaseMs;fade=state->fadeSeconds;}
         if(serial!=seenSerial&&serial!=0){seenSerial=serial;double start=0;{const juce::ScopedLock sl(state->lock);start=state->playhead;}video.setPlayPosition(start);video.setBlackoutAlpha(0);video.play();fading=false;}
         if(seenSerial!=0&&!held&&release>0.0){
             if(!fading){fading=true;fadeStart=release;if(freeze)video.stop();}
@@ -155,7 +176,7 @@ private:
             if(a<=0.001f){video.stop();video.setBlackoutAlpha(255);fading=false;seenSerial=0;const juce::ScopedLock sl(state->lock);state->pitch=-1;state->releaseMs=0.0;}
         }
     }
-    std::shared_ptr<VideoState> state;vlcplayer::VideoView video;juce::File loadedFile;juce::uint64 seenSerial=0;bool fading=false;double fadeStart=0.0;
+    std::shared_ptr<VideoState> state;vlcplayer::VideoView video;juce::File loadedFile;juce::uint64 seenSerial=0;bool fading=false,loadSucceeded=false;double fadeStart=0.0;
 };
 
 class OutputWindow final : public juce::DocumentWindow {
@@ -165,7 +186,7 @@ public:
         getConstrainer()->setFixedAspectRatio(16.0/9.0);setResizeLimits(480,270,1920,1080);centreWithSize(960,540);
     }
     void closeButtonPressed() override {setVisible(false);}
-    void playVideo() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->play(); }
+    juce::String playVideo() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->play(); return "Fenêtre de sortie vidéo indisponible."; }
     void pauseVideo() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->pause(); }
     void stopVideo() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->stop(); }
     bool isVideoPlaying() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->isPlaying(); return false; }
@@ -195,7 +216,7 @@ public:
         addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
         addAndMakeVisible(modeLabel);addAndMakeVisible(modeBox);addAndMakeVisible(fadeLabel);addAndMakeVisible(fadeSlider);addAndMakeVisible(outputButton);
         openVideo.setButtonText("Ouvrir une vidéo");openVideo.onClick=[this]{chooseVideo();};
-        play.setButtonText("Lire / Pause");play.onClick=[this]{ensureOutputWindow();if(outputWindow->isVideoPlaying()){outputWindow->pauseVideo();videoStatus.setText("Lecture en pause",juce::dontSendNotification);}else{outputWindow->playVideo();videoStatus.setText("Commande Lecture envoyée à VLC...",juce::dontSendNotification);}};
+        play.setButtonText("Lire / Pause");play.onClick=[this]{ensureOutputWindow();if(outputWindow->isVideoPlaying()){outputWindow->pauseVideo();videoStatus.setText("Lecture en pause",juce::dontSendNotification);}else{outputWindow->setVisible(true);outputWindow->toFront(true);auto result=outputWindow->playVideo();videoStatus.setText("Diagnostic VLC : "+result,juce::dontSendNotification);}};
         addMarker.setButtonText("Ajouter un repère à la position");addMarker.onClick=[this]{addCurrentMarker();};
         eraseMarker.setButtonText("Gomme désactivée");eraseMarker.setClickingTogglesState(true);eraseMarker.onClick=[this]{bool on=eraseMarker.getToggleState();eraseMarker.setButtonText(on?"Gomme activée : cliquer un repère":"Gomme désactivée");timeline.setEraseMode(on);};
         for(int i=0;i<12;++i)noteChoice.addItem(notes[(size_t)i],i+1);
