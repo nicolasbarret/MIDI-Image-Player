@@ -130,6 +130,8 @@ public:
     }
     void resized() override {video.setBounds(getLocalBounds());}
 private:
+    double lastTimelineDuration=0.0;
+    bool timelineDurationNeedsUpdate(double duration) const { return std::abs(duration - lastTimelineDuration) > 0.02; }
     void markProjectDirty(){projectDirty=true;nextAutoSaveMs=juce::Time::getMillisecondCounter()+1000;}
     void timerCallback() override {
         juce::File file;juce::uint64 serial;bool held,freeze;double release,fade;
@@ -224,7 +226,17 @@ public:
     }
 private:
     void timerCallback() override {
-        if(preview.isPlaying()){double p=preview.getPlayPosition();{const juce::ScopedLock sl(state->lock);state->playhead=p;}timeline.repaint();}
+        if(preview.isPlaying()){
+            double p=preview.getPlayPosition();
+            double duration=preview.getVideoDuration();
+            {
+                const juce::ScopedLock sl(state->lock);
+                state->playhead=p;
+                if(duration>0.0 && state->duration<=0.0) state->duration=duration;
+            }
+            if(duration>0.0 && timelineDurationNeedsUpdate(duration)){lastTimelineDuration=duration;timeline.setDuration(duration);}
+            timeline.repaint();
+        }
         if(projectDirty && juce::Time::getMillisecondCounter() >= nextAutoSaveMs){
             writeRecoveryProject();projectDirty=false;nextAutoSaveMs=juce::Time::getMillisecondCounter()+3000;
         }
