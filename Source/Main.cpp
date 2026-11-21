@@ -277,7 +277,7 @@ private:
         else {
             juce::File currentVideo;
             { const juce::ScopedLock sl(state->lock); currentVideo = state->file; }
-            if (currentVideo.existsAsFile() && videoStatus.getText().startsWith("Commande Lecture envoyée"))
+            if (currentVideo.existsAsFile() && videoStatus.getText().startsWith("Diagnostic VLC :"))
                 videoStatus.setText(outputWindow ? outputWindow->videoDiagnostic() : "Sortie OBS non ouverte", juce::dontSendNotification);
         }
         if(projectDirty && juce::Time::getMillisecondCounter() >= nextAutoSaveMs){
