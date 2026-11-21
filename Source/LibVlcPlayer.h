@@ -207,7 +207,7 @@ public:
     {
         if (!player) return errorMessage();
         if (!media) return "Aucun média associé au lecteur VLC.";
-        if (!videoHwnd || !IsWindow(videoHwnd)) return "Fenêtre vidéo Windows non créée.";
+        if (!videoHwnd || !IsWindow(videoHwnd)) return windowDiagnostic.isNotEmpty() ? windowDiagnostic : "Fenêtre vidéo Windows non créée.";
         if (lastPlayResult < 0) return "LibVLC a refusé le démarrage (code -1).";
         if (isPlaying()) return "VLC : lecture active.";
         const auto ms = Api::get().getTime(player);
