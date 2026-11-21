@@ -161,6 +161,40 @@ private:
     std::shared_ptr<VideoState> state;double duration=60.0;bool dragging=false,eraseMode=false;int dragRow=-1,dragIndex=-1;std::vector<float> waveform;
 };
 
+class WaveformJob final : public juce::ThreadPoolJob {
+public:
+    WaveformJob(juce::File f, std::function<void(std::vector<float>)> cb) : ThreadPoolJob("Audio waveform"), source(std::move(f)), callback(std::move(cb)) {}
+    JobStatus runJob() override {
+        std::vector<float> peaks(1800, 0.0f);
+        auto app=juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory();
+        auto ffmpeg=app.getChildFile("ffmpeg.exe");
+        auto wav=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("mvp-waveform", ".wav", false);
+        if(ffmpeg.existsAsFile() && source.existsAsFile()) {
+            juce::StringArray args; args.add(ffmpeg.getFullPathName()); args.add("-y"); args.add("-i"); args.add(source.getFullPathName());
+            args.add("-vn"); args.add("-ac"); args.add("1"); args.add("-ar"); args.add("8000"); args.add("-f"); args.add("wav"); args.add(wav.getFullPathName());
+            juce::ChildProcess process;
+            if(process.start(args) && process.waitForProcessToFinish(120000) && wav.existsAsFile()) {
+                juce::AudioFormatManager fm; fm.registerBasicFormats();
+                std::unique_ptr<juce::AudioFormatReader> reader(fm.createReaderFor(wav));
+                if(reader && reader->lengthInSamples>0) {
+                    const auto total=reader->lengthInSamples; juce::AudioBuffer<float> buffer(1,8192);
+                    for(juce::int64 offset=0;offset<total && !threadShouldExit();offset+=8192) {
+                        int count=(int)juce::jmin((juce::int64)8192,total-offset);
+                        if(!reader->read(&buffer,0,count,offset,true,false)) break;
+                        for(int i=0;i<count;++i) { int bin=juce::jmin(1799,(int)(((offset+i)*1800)/total)); peaks[(size_t)bin]=juce::jmax(peaks[(size_t)bin],std::abs(buffer.getSample(0,i))); }
+                    }
+                    float maximum=0.0f; for(float p:peaks) maximum=juce::jmax(maximum,p);
+                    if(maximum>0.0001f) for(auto& p:peaks) p/=maximum;
+                }
+            }
+        }
+        wav.deleteFile();
+        if(callback && !threadShouldExit()) { auto cb=std::move(callback); juce::MessageManager::callAsync([cb=std::move(cb), data=std::move(peaks)]() mutable { cb(std::move(data)); }); }
+        return jobHasFinished;
+    }
+private:
+    juce::File source; std::function<void(std::vector<float>)> callback;
+};
 class VideoOutputView final : public juce::Component, private juce::Timer {
 public:
     explicit VideoOutputView(std::shared_ptr<VideoState> s):state(std::move(s)){
@@ -278,6 +312,7 @@ public:
     }
     ~MainView() override {outputWindow.reset();setLookAndFeel(nullptr);if(settings)settings->saveIfNeeded();}
     void paint(juce::Graphics& g) override {g.fillAll(juce::Colour(0xff202329));g.setColour(juce::Colours::white);g.setFont(juce::Font(22,juce::Font::bold));g.drawText("MIDI VIDEO PLAYER",24,12,getWidth()-48,30,juce::Justification::centredLeft);g.setColour(juce::Colour(0xffb4bdc9));g.setFont(13);g.drawText("Place les marqueurs sur les 12 pistes, puis déclenche-les avec ton clavier MIDI.",24,42,getWidth()-48,22,juce::Justification::centredLeft);}
+    void setWaveformData(std::vector<float> p) { timeline.setWaveform(std::move(p)); }
     void resized() override {
         auto a=getLocalBounds().reduced(22);a.removeFromTop(72);
         auto projectBar=a.removeFromTop(38);
@@ -325,7 +360,9 @@ private:
         videoStatus.setText("Chargement de : "+f.getFileName(),juce::dontSendNotification);
         if(f.existsAsFile()){
             {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=0.0;state->playhead=0.0;state->held=false;state->activeMidiNote=-1;state->releaseMs=0.0;state->pendingTriggers.clear();}
-            timeline.setDuration(60.0);timeline.repaint();
+            timeline.setDuration(60.0);timeline.setWaveform({});timeline.repaint();
+            juce::Component::SafePointer<MainView> safe(this);
+            waveformJobs.addJob(new WaveformJob(f,[safe](std::vector<float> p){if(safe) safe->setWaveformData(std::move(p));}),true);
             ensureOutputWindow();
             outputWindow->setVisible(true);outputWindow->toFront(true);
             videoStatus.setText("Vidéo chargée dans la Sortie OBS : "+f.getFileName(),juce::dontSendNotification);
@@ -406,7 +443,7 @@ private:
         auto si=settings->getValue("input"),so=settings->getValue("output");for(int i=0;i<ins.size();++i)if(ins.getReference(i).identifier==si)inputBox.setSelectedId(i+2,juce::dontSendNotification);for(int i=0;i<outs.size();++i)if(outs.getReference(i).identifier==so)outputBox.setSelectedId(i+2,juce::dontSendNotification);}
     void selectInput(){int i=inputBox.getSelectedId()-2;if(i>=0&&i<ins.size()){auto d=ins.getReference(i);router.openInput(d.identifier);settings->setValue("input",d.identifier);settings->saveIfNeeded();}}
     void selectOutput(){int i=outputBox.getSelectedId()-2;if(i>=0&&i<outs.size()){auto d=outs.getReference(i);router.openOutput(d.identifier);settings->setValue("output",d.identifier);settings->saveIfNeeded();}}
-    std::shared_ptr<VideoState> state;MidiRouter router;MarkerTimeline timeline;
+    std::shared_ptr<VideoState> state;MidiRouter router;MarkerTimeline timeline;juce::ThreadPool waveformJobs{1};
     ReadableLookAndFeel readableLookAndFeel;
     juce::TextButton newProject,openProject,saveProject,saveAsProject;
     juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
