@@ -35,7 +35,7 @@ struct Api
     int (__cdecl *isPlaying)(Player*) = nullptr;
     std::int64_t (__cdecl *getTime)(Player*) = nullptr;
     std::int64_t (__cdecl *getLength)(Player*) = nullptr;
-    void (__cdecl *setTime)(Player*, std::int64_t) = nullptr;
+    void (__cdecl *setTime)(Player*, std::int64_t, int) = nullptr;
     void (__cdecl *setVolume)(Player*, int) = nullptr;
     void (__cdecl *setMute)(Player*, int) = nullptr;
 
@@ -183,7 +183,7 @@ public:
             Api::get().setHwnd(player, videoHwnd);
             lastPlayResult = Api::get().play(player);
             pendingPlay = false;
-            if (pendingSeek && isPlaying()) applyPendingSeek();
+            if (pendingSeek) applyPendingSeek();
         }
     }
 
@@ -232,7 +232,7 @@ public:
         if (!player || !media) return;
         pendingSeekMs = (std::int64_t)(juce::jmax(0.0, seconds) * 1000.0);
         pendingSeek = true;
-        if (isPlaying()) applyPendingSeek();
+        applyPendingSeek();
     }
 
     void setMuted(bool muted)
@@ -284,7 +284,7 @@ private:
             lastPlayResult = Api::get().play(player);
             pendingPlay = false;
         }
-        if (pendingSeek && isPlaying())
+        if (pendingSeek)
             applyPendingSeek();
     }
 
@@ -292,7 +292,9 @@ private:
     {
         if (player && media && pendingSeek)
         {
-            Api::get().setTime(player, pendingSeekMs);
+            // Fast seek asks VLC to jump to the nearest keyframe immediately.
+            // This trades a little frame precision for much lower trigger latency.
+            Api::get().setTime(player, pendingSeekMs, 1);
             pendingSeek = false;
         }
     }
