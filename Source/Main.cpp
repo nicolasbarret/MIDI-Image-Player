@@ -10,9 +10,55 @@
 namespace {
 class ReadableLookAndFeel final : public juce::LookAndFeel_V4 {
 public:
-    juce::Font getTextButtonFont(juce::TextButton&, int) override { return juce::Font(16.0f, juce::Font::bold); }
-    juce::Font getComboBoxFont(juce::ComboBox&) override { return juce::Font(15.0f); }
-    juce::Font getLabelFont(juce::Label&) override { return juce::Font(15.0f); }
+    static juce::Colour background() { return juce::Colour(0xff050705); }
+    static juce::Colour panel() { return juce::Colour(0xff101610); }
+    static juce::Colour neon() { return juce::Colour(0xff39ff14); }
+    static juce::Colour white() { return juce::Colour(0xfff4fff2); }
+
+    ReadableLookAndFeel() {
+        setColour(juce::ResizableWindow::backgroundColourId, background());
+        setColour(juce::DocumentWindow::textColourId, white());
+        setColour(juce::Label::textColourId, white());
+        setColour(juce::TextButton::buttonColourId, panel());
+        setColour(juce::TextButton::buttonOnColourId, neon().withAlpha(0.22f));
+        setColour(juce::TextButton::textColourOffId, white());
+        setColour(juce::TextButton::textColourOnId, neon());
+        setColour(juce::ComboBox::backgroundColourId, panel());
+        setColour(juce::ComboBox::textColourId, white());
+        setColour(juce::ComboBox::outlineColourId, neon().withAlpha(0.8f));
+        setColour(juce::ComboBox::arrowColourId, neon());
+        setColour(juce::PopupMenu::backgroundColourId, background());
+        setColour(juce::PopupMenu::textColourId, white());
+        setColour(juce::PopupMenu::highlightedBackgroundColourId, neon());
+        setColour(juce::PopupMenu::highlightedTextColourId, background());
+        setColour(juce::TextEditor::backgroundColourId, panel());
+        setColour(juce::TextEditor::textColourId, white());
+        setColour(juce::TextEditor::highlightColourId, neon().withAlpha(0.35f));
+        setColour(juce::TextEditor::outlineColourId, neon().withAlpha(0.65f));
+        setColour(juce::TextEditor::focusedOutlineColourId, neon());
+        setColour(juce::ScrollBar::thumbColourId, neon().withAlpha(0.8f));
+    }
+
+    juce::Font getTextButtonFont(juce::TextButton&, int) override {
+        return juce::Font("Segoe UI", 15.0f, juce::Font::bold);
+    }
+    juce::Font getComboBoxFont(juce::ComboBox&) override {
+        return juce::Font("Segoe UI", 14.0f, juce::Font::plain);
+    }
+    juce::Font getLabelFont(juce::Label&) override {
+        return juce::Font("Segoe UI", 14.0f, juce::Font::plain);
+    }
+    void drawButtonBackground(juce::Graphics& g, juce::Button& button,
+                              const juce::Colour&, bool highlighted, bool down) override {
+        auto bounds = button.getLocalBounds().toFloat().reduced(0.7f);
+        const bool selected = button.getToggleState();
+        auto fill = (down || selected) ? neon().withAlpha(0.24f)
+                   : highlighted ? neon().withAlpha(0.10f) : panel();
+        g.setColour(fill);
+        g.fillRoundedRectangle(bounds, 5.0f);
+        g.setColour(neon().withAlpha(highlighted || down || selected ? 1.0f : 0.72f));
+        g.drawRoundedRectangle(bounds, 5.0f, 1.1f);
+    }
 };
 const std::array<const char*,12> notes{"Do","Do#","Ré","Ré#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"};
 struct VideoState {
@@ -46,7 +92,6 @@ public:
     void openOutput(const juce::String& id) { output.reset(); if(id.isNotEmpty())output=juce::MidiOutput::openDevice(id); }
 private:
     void handleIncomingMidiMessage(juce::MidiInput*,const juce::MidiMessage& m) override {
-        if(output) output->sendMessageNow(m);
         bool dispatch=false;
         std::function<void()> notify;
         {
@@ -80,7 +125,10 @@ private:
             }
             if(dispatch) notify=state->dispatchPlayback;
         }
+        // Queue the visual trigger before forwarding MIDI to loopMIDI/FL Studio.
+        // A slow downstream MIDI port must not delay the video request.
         if(notify) notify();
+        if(output) output->sendMessageNow(m);
     }
     std::shared_ptr<VideoState> state;
     std::unique_ptr<juce::MidiInput> input;
@@ -96,32 +144,32 @@ public:
     void setWaveform(std::vector<float> peaks){waveform=std::move(peaks);repaint();}
     void setEraseMode(bool enabled){eraseMode=enabled;setMouseCursor(enabled?juce::MouseCursor::CrosshairCursor:juce::MouseCursor::PointingHandCursor);repaint();}
     void paint(juce::Graphics& g) override {
-        g.fillAll(juce::Colour(0xff171a20));
+        g.fillAll(juce::Colour(0xff050705));
         auto r=getLocalBounds().toFloat(); float left=48.0f, right=12.0f, top=25.0f;
-        g.setColour(juce::Colour(0xffc0c8d2)); g.setFont(12.0f);
+        g.setColour(juce::Colour(0xffb8ffad)); g.setFont(juce::Font("Segoe UI", 12.0f));
         g.drawText("Zoom x"+juce::String(zoom,1)+"   |   Molette : zoom   |   Maj + molette : déplacement",48,2,(int)r.getWidth()-60,19,juce::Justification::centredLeft);
         const float waveH=54.0f;
         const float trackArea=r.getHeight()-top-waveH-5.0f;
         float trackH=trackArea/12.0f;
-        g.setFont(12.0f);
+        g.setFont(juce::Font("Segoe UI", 12.0f));
         for(int i=0;i<12;++i){
             float y=top+i*trackH;
-            g.setColour(i%2?juce::Colour(0xff20252d):juce::Colour(0xff1c2128));
+            g.setColour(i%2?juce::Colour(0xff101810):juce::Colour(0xff0b100b));
             g.fillRect(left,y,r.getWidth()-left-right,trackH-1.0f);
-            g.setColour(juce::Colours::white.withAlpha(0.85f));
+            g.setColour(juce::Colour(0xffd8ffd1));
             g.drawText(notes[(size_t)i],2,(int)y,42,(int)trackH,juce::Justification::centredLeft);
             const juce::ScopedLock sl(state->lock);
             for(double t:state->markers[(size_t)i]){
                 float x=timeToX(t,left,r.getWidth()-left-right);
-                g.setColour(juce::Colour::fromHSV((float)i/12.0f,0.72f,0.98f,1.0f));
+                g.setColour(juce::Colour(0xff39ff14));
                 juce::Path p;p.addTriangle(x,y+3,x-5,y+trackH-4,x+5,y+trackH-4);g.fillPath(p);
                 g.drawLine(x,y+trackH-5,x,y+trackH-1,1.0f);
             }
         }
         const float waveY=top+trackArea+5.0f;
-        g.setColour(juce::Colour(0xff111820));
+        g.setColour(juce::Colour(0xff090d09));
         g.fillRoundedRectangle(left,waveY,r.getWidth()-left-right,waveH-2.0f,4.0f);
-        g.setColour(juce::Colour(0xff65c6d8).withAlpha(0.9f));
+        g.setColour(juce::Colour(0xff39ff14).withAlpha(0.92f));
         if(!waveform.empty()) {
             const float mid=waveY+(waveH-2.0f)*0.5f;
             const float half=(waveH-10.0f)*0.5f;
@@ -139,7 +187,7 @@ public:
             g.setColour(juce::Colours::white.withAlpha(0.45f));
             g.drawText("Forme d'onde audio en attente", (int)left,(int)waveY,(int)(r.getWidth()-left-right),(int)waveH,juce::Justification::centred);
         }
-        g.setColour(juce::Colours::white.withAlpha(0.45f));
+        g.setColour(juce::Colour(0xfff4fff2).withAlpha(0.85f));
         float px=timeToX(state->playhead,left,r.getWidth()-left-right);
         g.drawLine(px,top,px,waveY+waveH-2.0f,1.3f);
     }
@@ -334,7 +382,7 @@ public:
         auto path=settings->getValue("video");if(path.isNotEmpty()){juce::File f(path);if(f.existsAsFile())loadVideo(f);}
         for(int i=0;i<12;++i){auto key="markers"+juce::String(i);state->markers[(size_t)i]=parseMarkers(settings->getValue(key));}
 
-        addAndMakeVisible(timeline);videoStatus.setColour(juce::Label::textColourId,juce::Colours::white);videoStatus.setText("Aucune vidéo chargée",juce::dontSendNotification);
+        addAndMakeVisible(timeline);videoStatus.setColour(juce::Label::textColourId,juce::Colour(0xff39ff14));videoStatus.setText("Aucune vidéo chargée",juce::dontSendNotification);
         setLookAndFeel(&readableLookAndFeel);
         addAndMakeVisible(newProject);addAndMakeVisible(openProject);addAndMakeVisible(saveProject);addAndMakeVisible(saveAsProject);
         addAndMakeVisible(openVideo);addAndMakeVisible(play);addAndMakeVisible(addMarker);addAndMakeVisible(eraseMarker);addAndMakeVisible(noteChoice);addAndMakeVisible(videoStatus);
@@ -342,7 +390,18 @@ public:
         openProject.setButtonText("Ouvrir projet");openProject.onClick=[this]{chooseProjectToOpen();};
         saveProject.setButtonText("Enregistrer");saveProject.onClick=[this]{saveProjectAction();};
         saveAsProject.setButtonText("Enregistrer sous");saveAsProject.onClick=[this]{chooseProjectToSave();};
-        for(auto* b:{&newProject,&openProject,&saveProject,&saveAsProject,&openVideo,&play,&addMarker,&eraseMarker,&refresh,&outputButton}) b->setColour(juce::TextButton::buttonColourId,juce::Colour(0xff354252));
+        for(auto* b:{&newProject,&openProject,&saveProject,&saveAsProject,&openVideo,&play,&addMarker,&eraseMarker,&refresh,&outputButton}) {
+            b->setColour(juce::TextButton::buttonColourId,juce::Colour(0xff101610));
+            b->setColour(juce::TextButton::buttonOnColourId,juce::Colour(0xff39ff14).withAlpha(0.22f));
+            b->setColour(juce::TextButton::textColourOffId,juce::Colour(0xfff4fff2));
+            b->setColour(juce::TextButton::textColourOnId,juce::Colour(0xff39ff14));
+        }
+        for(auto* box:{&noteChoice,&inputBox,&outputBox}) {
+            box->setColour(juce::ComboBox::backgroundColourId,juce::Colour(0xff101610));
+            box->setColour(juce::ComboBox::textColourId,juce::Colour(0xfff4fff2));
+            box->setColour(juce::ComboBox::outlineColourId,juce::Colour(0xff39ff14).withAlpha(0.8f));
+            box->setColour(juce::ComboBox::arrowColourId,juce::Colour(0xff39ff14));
+        }
         addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
         addAndMakeVisible(outputButton);
         openVideo.setButtonText("Ouvrir une vidéo");openVideo.onClick=[this]{chooseVideo();};
@@ -367,7 +426,15 @@ public:
         startTimerHz(10);
     }
     ~MainView() override {outputWindow.reset();setLookAndFeel(nullptr);if(settings)settings->saveIfNeeded();}
-    void paint(juce::Graphics& g) override {g.fillAll(juce::Colour(0xff202329));g.setColour(juce::Colours::white);g.setFont(juce::Font(22,juce::Font::bold));g.drawText("MIDI VIDEO PLAYER",24,12,getWidth()-48,30,juce::Justification::centredLeft);g.setColour(juce::Colour(0xffb4bdc9));g.setFont(13);g.drawText("Place les marqueurs sur les 12 pistes, puis déclenche-les avec ton clavier MIDI.",24,42,getWidth()-48,22,juce::Justification::centredLeft);}
+    void paint(juce::Graphics& g) override {
+        g.fillAll(juce::Colour(0xff050705));
+        g.setColour(juce::Colour(0xff39ff14));
+        g.setFont(juce::Font("Segoe UI", 22.0f, juce::Font::bold));
+        g.drawText("MIDI VIDEO PLAYER",24,12,getWidth()-48,30,juce::Justification::centredLeft);
+        g.setColour(juce::Colour(0xfff4fff2));
+        g.setFont(juce::Font("Segoe UI", 13.0f));
+        g.drawText("Place les marqueurs sur les 12 pistes, puis déclenche-les avec ton clavier MIDI.",24,42,getWidth()-48,22,juce::Justification::centredLeft);
+    }
     void setWaveformData(std::vector<float> p) { timeline.setWaveform(std::move(p)); }
     void resized() override {
         auto a=getLocalBounds().reduced(22);a.removeFromTop(72);
@@ -508,7 +575,7 @@ private:
 
 class MainWindow final : public juce::DocumentWindow {
 public:
-    MainWindow():DocumentWindow("MIDI Video Player",juce::Colour(0xff202329),allButtons){setUsingNativeTitleBar(true);setContentOwned(new MainView(),true);setResizable(true,true);centreWithSize(1120,850);}
+    MainWindow():DocumentWindow("MIDI Video Player",juce::Colour(0xff050705),allButtons){setUsingNativeTitleBar(true);setContentOwned(new MainView(),true);setResizable(true,true);centreWithSize(1120,850);}
     void closeButtonPressed() override {juce::JUCEApplication::getInstance()->systemRequestedQuit();}
 };
 class App final : public juce::JUCEApplication {
