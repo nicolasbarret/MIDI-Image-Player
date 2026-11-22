@@ -619,6 +619,7 @@ public:
     bool load(const juce::File&) { return false; }
     void unload() {}
     void play() {}
+    void trigger(double) {}
     void pause() {}
     void stop() {}
     bool isPlaying() const { return false; }
