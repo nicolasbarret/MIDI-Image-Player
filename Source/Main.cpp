@@ -69,10 +69,6 @@ struct VideoState {
     juce::File file;
     std::array<std::vector<double>,12> markers;
     double duration=0.0, playhead=0.0;
-    bool held=false;
-    int activeMidiNote=-1;
-    std::array<int,128> activeNoteCounts{};
-    double releaseMs=0.0;
     std::deque<double> pendingTriggers;
     std::function<void()> dispatchPlayback;
 };
@@ -106,23 +102,11 @@ private:
                 if(!list.empty()) {
                     double chosen=list.front(), best=std::abs(chosen-state->playhead);
                     for(double t:list){double d=std::abs(t-state->playhead);if(d<best){best=d;chosen=t;}}
-                    state->activeMidiNote=midiNote;
-                    state->activeNoteCounts[(size_t)midiNote]++;
-                    state->held=true;
-                    state->releaseMs=0.0;
                     state->playhead=chosen;
+                    // Note Off remains forwarded to loopMIDI/FL Studio, but it does not
+                    // pause the video. Short drum notes must not cut a running clip.
                     state->pendingTriggers.clear();
                     state->pendingTriggers.push_back(chosen);
-                    dispatch=true;
-                }
-            } else if(m.isNoteOff()) {
-                const int midiNote=m.getNoteNumber();
-                if(midiNote>=0 && midiNote<128 && state->activeNoteCounts[(size_t)midiNote]>0)
-                    --state->activeNoteCounts[(size_t)midiNote];
-                if(state->activeMidiNote==midiNote && state->activeNoteCounts[(size_t)midiNote]==0) {
-                    state->activeMidiNote=-1;
-                    state->held=false;
-                    state->releaseMs=juce::Time::getMillisecondCounterHiRes();
                     dispatch=true;
                 }
             }
@@ -304,7 +288,6 @@ public:
         syncFile();
         if (!loadedFile.existsAsFile()) return "Aucune vidéo chargée dans la Sortie OBS.";
         if (!video.isAvailable()) return video.errorMessage();
-        video.setBlackoutAlpha(0);
         video.play();
         return video.playbackDiagnostic();
     }
@@ -324,37 +307,21 @@ private:
             video.unload();
             loadedFile = file;
             loadSucceeded = file.existsAsFile() && video.load(file);
-            if (loadSucceeded) {
-                video.setPlayPosition(0.0);
+            if (!loadSucceeded)
                 video.setBlackoutAlpha(0);
-            } else {
-                video.setBlackoutAlpha(0);
-            }
         }
     }
     void timerCallback() override { syncFile(); }
     void handleAsyncUpdate() override {
         std::deque<double> triggers;
-        bool held=false;
-        double release=0.0;
         {
             const juce::ScopedLock sl(state->lock);
             triggers.swap(state->pendingTriggers);
-            held=state->held;
-            release=state->releaseMs;
         }
         if(!triggers.empty()) {
-            const double start=triggers.back();
-            video.setPlayPosition(start);
-            video.setBlackoutAlpha(0);
-            video.play();
-        }
-        if(!held && release>0.0) {
-            // Pause instead of stopping: keep LibVLC's decoder and media pipeline
-            // alive so the next MIDI note can resume without a full restart.
-            video.pause();
-            const juce::ScopedLock sl(state->lock);
-            state->releaseMs=0.0;
+            // The newest event wins if several MIDI hits arrive in one GUI cycle.
+            // Older requests are discarded rather than played late and out of rhythm.
+            video.trigger(triggers.back());
         }
     }
     std::shared_ptr<VideoState> state;vlcplayer::VideoView video;juce::File loadedFile;bool loadSucceeded=false;
@@ -485,7 +452,7 @@ private:
     void loadVideo(const juce::File& f){
         videoStatus.setText("Chargement de : "+f.getFileName(),juce::dontSendNotification);
         if(f.existsAsFile()){
-            {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=0.0;state->playhead=0.0;state->held=false;state->activeMidiNote=-1;state->activeNoteCounts.fill(0);state->releaseMs=0.0;state->pendingTriggers.clear();}
+            {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=0.0;state->playhead=0.0;state->pendingTriggers.clear();}
             timeline.setDuration(60.0);timeline.setWaveform({});timeline.repaint();
             juce::Component::SafePointer<MainView> safe(this);
             waveformJobs.addJob(new WaveformJob(f,[safe](std::vector<float> p){if(safe) safe->setWaveformData(std::move(p));}),true);
@@ -547,7 +514,7 @@ private:
             const juce::ScopedLock sl(state->lock);
             for(int i=0;i<12;++i) state->markers[(size_t)i]=(markers.isArray()&&i<markers.size())?parseMarkers(markers[i].toString()):std::vector<double>{};
             videoPath=obj->getProperty("video").toString();
-            state->playhead=0.0;state->held=false;state->activeMidiNote=-1;
+            state->playhead=0.0;
         }
         settings->setValue("input",obj->getProperty("midiInput").toString());settings->setValue("output",obj->getProperty("midiOutput").toString());
         settings->saveIfNeeded();currentProject=(file==recoveryProjectFile()?juce::File{}:file);projectDirty=false;
@@ -559,7 +526,7 @@ private:
         else videoStatus.setText("Projet chargé : "+file.getFileName(),juce::dontSendNotification);
     }
     void newProjectAction(){
-        {const juce::ScopedLock sl(state->lock);for(auto& m:state->markers)m.clear();state->file={};state->duration=0;state->playhead=0;state->activeMidiNote=-1;state->activeNoteCounts.fill(0);state->held=false;state->pendingTriggers.clear();}
+        {const juce::ScopedLock sl(state->lock);for(auto& m:state->markers)m.clear();state->file={};state->duration=0;state->playhead=0;state->pendingTriggers.clear();}
         if(outputWindow)outputWindow->stopVideo();{const juce::ScopedLock sl(state->lock);state->file={};state->duration=0.0;state->playhead=0.0;}timeline.setDuration(60.0);timeline.repaint();currentProject={};projectDirty=true;
         videoStatus.setText("Nouveau projet",juce::dontSendNotification);writeRecoveryProject();
     }
