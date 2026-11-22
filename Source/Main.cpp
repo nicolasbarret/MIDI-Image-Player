@@ -14,6 +14,9 @@ public:
     static juce::Colour panel() { return juce::Colour(0xff101610); }
     static juce::Colour neon() { return juce::Colour(0xff39ff14); }
     static juce::Colour white() { return juce::Colour(0xfff4fff2); }
+    static juce::Font uiFont(float height, int style = juce::Font::plain) {
+        return juce::Font(juce::FontOptions(juce::String("Segoe UI"), height, style));
+    }
 
     ReadableLookAndFeel() {
         setColour(juce::ResizableWindow::backgroundColourId, background());
@@ -40,13 +43,13 @@ public:
     }
 
     juce::Font getTextButtonFont(juce::TextButton&, int) override {
-        return juce::Font("Segoe UI", 15.0f, juce::Font::bold);
+        return ReadableLookAndFeel::uiFont(15.0f, juce::Font::bold);
     }
     juce::Font getComboBoxFont(juce::ComboBox&) override {
-        return juce::Font("Segoe UI", 14.0f, juce::Font::plain);
+        return ReadableLookAndFeel::uiFont(14.0f);
     }
     juce::Font getLabelFont(juce::Label&) override {
-        return juce::Font("Segoe UI", 14.0f, juce::Font::plain);
+        return ReadableLookAndFeel::uiFont(14.0f);
     }
     void drawButtonBackground(juce::Graphics& g, juce::Button& button,
                               const juce::Colour&, bool highlighted, bool down) override {
@@ -146,12 +149,12 @@ public:
     void paint(juce::Graphics& g) override {
         g.fillAll(juce::Colour(0xff050705));
         auto r=getLocalBounds().toFloat(); float left=48.0f, right=12.0f, top=25.0f;
-        g.setColour(juce::Colour(0xffb8ffad)); g.setFont(juce::Font("Segoe UI", 12.0f));
+        g.setColour(juce::Colour(0xffb8ffad)); g.setFont(ReadableLookAndFeel::uiFont(12.0f));
         g.drawText("Zoom x"+juce::String(zoom,1)+"   |   Molette : zoom   |   Maj + molette : déplacement",48,2,(int)r.getWidth()-60,19,juce::Justification::centredLeft);
         const float waveH=54.0f;
         const float trackArea=r.getHeight()-top-waveH-5.0f;
         float trackH=trackArea/12.0f;
-        g.setFont(juce::Font("Segoe UI", 12.0f));
+        g.setFont(ReadableLookAndFeel::uiFont(12.0f));
         for(int i=0;i<12;++i){
             float y=top+i*trackH;
             g.setColour(i%2?juce::Colour(0xff101810):juce::Colour(0xff0b100b));
@@ -429,10 +432,10 @@ public:
     void paint(juce::Graphics& g) override {
         g.fillAll(juce::Colour(0xff050705));
         g.setColour(juce::Colour(0xff39ff14));
-        g.setFont(juce::Font("Segoe UI", 22.0f, juce::Font::bold));
+        g.setFont(ReadableLookAndFeel::uiFont(22.0f, juce::Font::bold));
         g.drawText("MIDI VIDEO PLAYER",24,12,getWidth()-48,30,juce::Justification::centredLeft);
         g.setColour(juce::Colour(0xfff4fff2));
-        g.setFont(juce::Font("Segoe UI", 13.0f));
+        g.setFont(ReadableLookAndFeel::uiFont(13.0f));
         g.drawText("Place les marqueurs sur les 12 pistes, puis déclenche-les avec ton clavier MIDI.",24,42,getWidth()-48,22,juce::Justification::centredLeft);
     }
     void setWaveformData(std::vector<float> p) { timeline.setWaveform(std::move(p)); }
