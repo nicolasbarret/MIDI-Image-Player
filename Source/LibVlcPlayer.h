@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include <memory>
 #include <cstdint>
+#include <array>
 
 #if JUCE_WINDOWS
 #ifndef NOMINMAX
@@ -105,23 +106,35 @@ struct Api
 class VideoView final : public juce::Component, private juce::Timer
 {
 public:
+    static constexpr int PlayerPoolSize = 3;
+
     VideoView()
     {
         setOpaque(true);
-        player = Api::get().ready() ? Api::get().newPlayer(Api::get().instance) : nullptr;
+        for (auto& slot : slots)
+            slot.player = Api::get().ready() ? Api::get().newPlayer(Api::get().instance) : nullptr;
         startTimerHz(120);
     }
 
     ~VideoView() override
     {
         stop();
-        if (player && Api::get().releasePlayer)
-            Api::get().releasePlayer(player);
-        player = nullptr;
+        for (auto& slot : slots)
+        {
+            if (slot.media && Api::get().releaseMedia)
+                Api::get().releaseMedia(slot.media);
+            slot.media = nullptr;
+            if (slot.player && Api::get().releasePlayer)
+                Api::get().releasePlayer(slot.player);
+            slot.player = nullptr;
+        }
         destroyWindows();
     }
 
-    bool isAvailable() const { return player != nullptr; }
+    bool isAvailable() const
+    {
+        return usablePlayerCount() > 0;
+    }
 
     juce::String errorMessage() const
     {
@@ -129,125 +142,192 @@ public:
             return "LibVLC introuvable. Le dossier VLC doit être à côté du programme.";
         if (!Api::get().instance)
             return "Impossible d'initialiser LibVLC. Vérifie le dossier VLC et ses greffons.";
-        if (!player)
-            return "Impossible de créer le lecteur LibVLC.";
+        if (usablePlayerCount() == 0)
+            return "Impossible de créer les lecteurs LibVLC.";
         return {};
     }
 
     bool load(const juce::File& file)
     {
-        if (!player || !file.existsAsFile())
+        if (!file.existsAsFile() || usablePlayerCount() == 0)
             return false;
 
         stop();
-        if (media)
+        for (auto& slot : slots)
         {
-            Api::get().releaseMedia(media);
-            media = nullptr;
+            if (slot.media)
+            {
+                Api::get().releaseMedia(slot.media);
+                slot.media = nullptr;
+            }
+            slot.warmed = false;
         }
 
         auto utf8 = file.getFullPathName().toUTF8();
-        media = Api::get().newPath(Api::get().instance, utf8.getAddress());
-        if (!media)
+        int loaded = 0;
+        for (auto& slot : slots)
+        {
+            if (!slot.player)
+                continue;
+            slot.media = Api::get().newPath(Api::get().instance, utf8.getAddress());
+            if (!slot.media)
+                continue;
+            Api::get().setMedia(slot.player, slot.media);
+            ++loaded;
+        }
+
+        if (loaded == 0)
             return false;
 
-        Api::get().setMedia(player, media);
-        if (ensureWindows()) Api::get().setHwnd(player, videoHwnd);
         loadedFile = file;
+        activeSlot = -1;
+        nextSlot = 0;
+        pendingPlay = false;
+        pendingPlaySlot = -1;
+        pendingSeek = false;
+        warmupActive = true;
+        warmupIndex = 0;
+        warmupPhase = 0;
+        warmupDeadline = 0;
+        ensureWindows();
+        setBlackoutAlpha(255);
         return true;
     }
 
     void unload()
     {
         stop();
-        if (media)
+        for (auto& slot : slots)
         {
-            Api::get().releaseMedia(media);
-            media = nullptr;
+            if (slot.media)
+            {
+                Api::get().releaseMedia(slot.media);
+                slot.media = nullptr;
+            }
+            slot.warmed = false;
         }
         loadedFile = {};
         pendingPlay = false;
+        pendingPlaySlot = -1;
         pendingSeek = false;
+        warmupActive = false;
         setBlackoutAlpha(255);
     }
 
+    // Used by MIDI Note On. A prepared player is selected for every retrigger,
+    // while all players render into the same OBS output HWND.
+    void trigger(double seconds)
+    {
+        pendingSeekMs = (std::int64_t)(juce::jmax(0.0, seconds) * 1000.0);
+        pendingSeek = true;
+        play();
+    }
+
+    // Manual play resumes the current player unless a new seek is pending.
     void play()
     {
-        if (player && media)
+        if (usablePlayerCount() == 0)
+            return;
+
+        cancelWarmup();
+        int selected = pendingSeek ? chooseNextPlayer() : activeSlot;
+        if (selected < 0)
+            selected = chooseNextPlayer();
+        if (selected < 0)
+            return;
+
+        if (!ensureWindows())
         {
-            if (!ensureWindows())
-            {
-                pendingPlay = true;
-                return;
-            }
-            Api::get().setHwnd(player, videoHwnd);
-            lastPlayResult = Api::get().play(player);
-            pendingPlay = false;
-            if (pendingSeek) applyPendingSeek();
+            pendingPlay = true;
+            pendingPlaySlot = selected;
+            return;
         }
+
+        startPlayer(selected);
     }
 
     void pause()
     {
-        if (player)
-            Api::get().setPause(player, 1);
+        if (auto* p = activePlayer())
+            Api::get().setPause(p, 1);
     }
 
     void stop()
     {
-        if (player)
-            Api::get().stop(player);
+        for (auto& slot : slots)
+            if (slot.player && slot.media)
+                Api::get().stop(slot.player);
+        activeSlot = -1;
+        nextSlot = 0;
+        pendingPlay = false;
+        pendingPlaySlot = -1;
+        pendingSeek = false;
+        warmupActive = false;
     }
 
     bool isPlaying() const
     {
-        return player && Api::get().isPlaying(player) != 0;
+        auto* p = activePlayer();
+        return p && Api::get().isPlaying(p) != 0;
     }
 
     juce::String playbackDiagnostic() const
     {
-        if (!player) return errorMessage();
-        if (!media) return "Aucun média associé au lecteur VLC.";
-        if (!videoHwnd || !IsWindow(videoHwnd)) return windowDiagnostic.isNotEmpty() ? windowDiagnostic : "Fenêtre vidéo Windows non créée.";
-        if (lastPlayResult < 0) return "LibVLC a refusé le démarrage (code -1).";
-        if (isPlaying()) return "VLC : lecture active.";
-        const auto ms = Api::get().getTime(player);
-        const auto len = Api::get().getLength(player);
-        if (len > 0 && ms >= len) return "VLC : vidéo arrivée à la fin.";
-        return "VLC chargé, mais le moteur ne signale pas de lecture active.";
+        if (usablePlayerCount() == 0) return errorMessage();
+        if (!loadedFile.existsAsFile()) return "Aucun média associé aux lecteurs VLC.";
+        if (!videoHwnd || !IsWindow(videoHwnd))
+            return windowDiagnostic.isNotEmpty() ? windowDiagnostic : "Fenêtre vidéo Windows non créée.";
+        const auto* slot = diagnosticSlot();
+        if (slot == nullptr) return "Aucun lecteur VLC prêt.";
+        if (slot->lastPlayResult < 0) return "LibVLC a refusé le démarrage (code -1).";
+        if (isPlaying()) return "VLC : lecture active (3 lecteurs préchargés).";
+        if (warmupActive) return "VLC : préchargement des lecteurs...";
+        return "VLC chargé, lecteurs préchargés.";
     }
 
     double getPlayPosition() const
     {
-        return player ? (double) Api::get().getTime(player) / 1000.0 : 0.0;
+        auto* p = activePlayer();
+        if (!p && slots[0].player && slots[0].media)
+            p = slots[0].player;
+        return p ? (double) Api::get().getTime(p) / 1000.0 : 0.0;
     }
 
     double getVideoDuration() const
     {
-        return player ? (double) Api::get().getLength(player) / 1000.0 : 0.0;
+        auto* p = activePlayer();
+        if (!p && slots[0].player && slots[0].media)
+            p = slots[0].player;
+        return p ? (double) Api::get().getLength(p) / 1000.0 : 0.0;
     }
 
     void setPlayPosition(double seconds)
     {
-        if (!player || !media) return;
         pendingSeekMs = (std::int64_t)(juce::jmax(0.0, seconds) * 1000.0);
-        pendingSeek = true;
-        // A seek requested while paused is applied immediately after play() restarts
-        // the decoder. Seeking a stopped/paused LibVLC player can delay the next frame.
-        if (isPlaying())
-            applyPendingSeek();
+        auto* p = activePlayer();
+        if (p && Api::get().isPlaying(p))
+        {
+            Api::get().setTime(p, pendingSeekMs);
+            pendingSeek = false;
+        }
+        else
+        {
+            pendingSeek = true;
+        }
     }
 
     void setMuted(bool muted)
     {
-        if (player)
-            Api::get().setMute(player, muted ? 1 : 0);
+        for (auto& slot : slots)
+            if (slot.player)
+                Api::get().setMute(slot.player, muted ? 1 : 0);
     }
 
     void setVolume(int volume)
     {
-        if (player)
-            Api::get().setVolume(player, juce::jlimit(0, 100, volume));
+        for (auto& slot : slots)
+            if (slot.player)
+                Api::get().setVolume(slot.player, juce::jlimit(0, 100, volume));
     }
 
     void setBlackoutAlpha(int alpha)
@@ -275,31 +355,166 @@ public:
     }
 
 private:
+    struct PlayerSlot
+    {
+        Api::Player* player = nullptr;
+        Api::Media* media = nullptr;
+        int lastPlayResult = 0;
+        bool warmed = false;
+    };
+
+    int usablePlayerCount() const
+    {
+        int count = 0;
+        for (const auto& slot : slots)
+            if (slot.player && slot.media)
+                ++count;
+        return count;
+    }
+
+    Api::Player* activePlayer() const
+    {
+        if (activeSlot >= 0 && activeSlot < PlayerPoolSize)
+            return slots[(size_t) activeSlot].player;
+        return nullptr;
+    }
+
+    const PlayerSlot* diagnosticSlot() const
+    {
+        if (activeSlot >= 0 && activeSlot < PlayerPoolSize)
+            return &slots[(size_t) activeSlot];
+        for (const auto& slot : slots)
+            if (slot.player && slot.media)
+                return &slot;
+        return nullptr;
+    }
+
+    int chooseNextPlayer() const
+    {
+        int count = usablePlayerCount();
+        if (count == 0)
+            return -1;
+        for (int offset = 0; offset < PlayerPoolSize; ++offset)
+        {
+            int candidate = (nextSlot + offset) % PlayerPoolSize;
+            const auto& slot = slots[(size_t) candidate];
+            if (slot.player && slot.media &&
+                (candidate != activeSlot || count == 1))
+                return candidate;
+        }
+        return activeSlot;
+    }
+
+    void startPlayer(int selected)
+    {
+        if (selected < 0 || selected >= PlayerPoolSize)
+            return;
+        auto& slot = slots[(size_t) selected];
+        if (!slot.player || !slot.media)
+            return;
+
+        if (activeSlot >= 0 && activeSlot != selected)
+        {
+            auto* old = slots[(size_t) activeSlot].player;
+            if (old)
+                Api::get().setPause(old, 1);
+        }
+
+        Api::get().setHwnd(slot.player, videoHwnd);
+        slot.lastPlayResult = Api::get().play(slot.player);
+        if (pendingSeek)
+        {
+            // Accurate seek on a decoder that is already initialised.
+            Api::get().setTime(slot.player, pendingSeekMs);
+            pendingSeek = false;
+        }
+
+        activeSlot = selected;
+        nextSlot = (selected + 1) % PlayerPoolSize;
+        pendingPlay = false;
+        pendingPlaySlot = -1;
+        setBlackoutAlpha(0);
+    }
+
+    void cancelWarmup()
+    {
+        if (!warmupActive)
+            return;
+        if (warmupPhase > 0 && warmupIndex < PlayerPoolSize)
+        {
+            auto* p = slots[(size_t) warmupIndex].player;
+            if (p)
+                Api::get().setPause(p, 1);
+        }
+        warmupActive = false;
+        warmupPhase = 0;
+    }
+
+    void serviceWarmup()
+    {
+        if (!warmupActive || activeSlot >= 0 || pendingPlay)
+            return;
+
+        while (warmupIndex < PlayerPoolSize &&
+               (!slots[(size_t) warmupIndex].player || !slots[(size_t) warmupIndex].media))
+            ++warmupIndex;
+
+        if (warmupIndex >= PlayerPoolSize)
+        {
+            warmupActive = false;
+            setBlackoutAlpha(0);
+            return;
+        }
+
+        auto& slot = slots[(size_t) warmupIndex];
+        const auto now = juce::Time::getMillisecondCounter();
+
+        if (warmupPhase == 0)
+        {
+            Api::get().setHwnd(slot.player, videoHwnd);
+            slot.lastPlayResult = Api::get().play(slot.player);
+            warmupDeadline = now + 2500;
+            warmupPhase = 1;
+        }
+        else if (warmupPhase == 1)
+        {
+            if (Api::get().isPlaying(slot.player))
+            {
+                Api::get().setPause(slot.player, 1);
+                warmupDeadline = now + 750;
+                warmupPhase = 2;
+            }
+            else if (now >= warmupDeadline)
+            {
+                Api::get().stop(slot.player);
+                ++warmupIndex;
+                warmupPhase = 0;
+            }
+        }
+        else if (warmupPhase == 2)
+        {
+            if (!Api::get().isPlaying(slot.player) || now >= warmupDeadline)
+            {
+                Api::get().setPause(slot.player, 1);
+                Api::get().setTime(slot.player, 0);
+                slot.warmed = true;
+                ++warmupIndex;
+                warmupPhase = 0;
+            }
+        }
+    }
+
     void timerCallback() override
     {
-        // Retry after JUCE has created the native top-level window.
+        // Rebind all preloaded players if JUCE recreates its native window.
         if ((!videoHwnd || !IsWindow(videoHwnd)) && isShowing())
             ensureWindows();
 
         if (pendingPlay && ensureWindows())
-        {
-            Api::get().setHwnd(player, videoHwnd);
-            lastPlayResult = Api::get().play(player);
-            pendingPlay = false;
-            if (pendingSeek)
-                applyPendingSeek();
-        }
-    }
+            startPlayer(pendingPlaySlot);
 
-    void applyPendingSeek()
-    {
-        if (player && media && pendingSeek)
-        {
-            // Start/restart the player first, then apply the precise seek.
-            // Avoid VLC's fast-keyframe mode: it was less consistent on rapid triggers.
-            Api::get().setTime(player, pendingSeekMs);
-            pendingSeek = false;
-        }
+        if (warmupActive && ensureWindows())
+            serviceWarmup();
     }
 
     bool ensureWindows()
@@ -323,31 +538,30 @@ private:
             destroyWindows();
             parentHwnd = parent;
 
-            // La fenêtre de sortie JUCE est déjà une vraie fenêtre Windows.
-            // On la donne directement à VLC : cela évite de créer un HWND enfant
-            // supplémentaire, opération qui échouait sur certaines configurations.
+            // One native output HWND is shared by the three VLC players.
             auto style = GetWindowLongPtrW(parentHwnd, GWL_STYLE);
             SetWindowLongPtrW(parentHwnd, GWL_STYLE, style | WS_CLIPCHILDREN);
             videoHwnd = parentHwnd;
 
-            // Le calque noir est facultatif : son échec ne doit jamais bloquer la vidéo.
             blackoutHwnd = CreateWindowExW(WS_EX_LAYERED, L"STATIC", L"",
                                            WS_CHILD | WS_CLIPSIBLINGS,
                                            0, 0, 1, 1, parentHwnd, nullptr,
                                            GetModuleHandleW(nullptr), nullptr);
             if (!blackoutHwnd)
-                windowDiagnostic = "VLC utilise la fenêtre de sortie. Le calque de fondu noir n'a pas pu être créé.";
+                windowDiagnostic = "VLC utilise la sortie unique. Le cache noir de préchargement est indisponible.";
             else
                 windowDiagnostic.clear();
 
-            if (player)
-                Api::get().setHwnd(player, videoHwnd);
+            for (auto& slot : slots)
+                if (slot.player)
+                    Api::get().setHwnd(slot.player, videoHwnd);
+
             setBlackoutAlpha(blackoutAlpha);
             positionWindows();
         }
         const bool valid = videoHwnd != nullptr && IsWindow(videoHwnd);
         if (!valid && windowDiagnostic.isEmpty())
-            windowDiagnostic = "Fenêtre vidéo : handle enfant invalide.";
+            windowDiagnostic = "Fenêtre vidéo : handle Windows invalide.";
         return valid;
     }
 
@@ -375,17 +589,22 @@ private:
         parentHwnd = nullptr;
     }
 
-    Api::Player* player = nullptr;
-    Api::Media* media = nullptr;
+    std::array<PlayerSlot, PlayerPoolSize> slots{};
+    int activeSlot = -1;
+    int nextSlot = 0;
     HWND parentHwnd = nullptr;
     HWND videoHwnd = nullptr;
     HWND blackoutHwnd = nullptr;
     juce::String windowDiagnostic;
-    BYTE blackoutAlpha = 0;
+    BYTE blackoutAlpha = 255;
     std::int64_t pendingSeekMs = 0;
     bool pendingSeek = false;
     bool pendingPlay = false;
-    int lastPlayResult = 0;
+    int pendingPlaySlot = -1;
+    bool warmupActive = false;
+    int warmupIndex = 0;
+    int warmupPhase = 0;
+    juce::uint32 warmupDeadline = 0;
     juce::File loadedFile;
 };
 }
