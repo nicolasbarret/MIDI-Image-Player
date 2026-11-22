@@ -13,4 +13,8 @@ juce_add_gui_app(MIDIVideoPlayer PRODUCT_NAME "MIDI Video Player" COMPANY_NAME "
 juce_generate_juce_header(MIDIVideoPlayer)
 target_sources(MIDIVideoPlayer PRIVATE Source/Main.cpp)
 target_compile_definitions(MIDIVideoPlayer PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+if(MSVC)
+  # Keep accented French UI strings consistently UTF-8 on Windows.
+  target_compile_options(MIDIVideoPlayer PRIVATE /utf-8)
+endif()
 target_link_libraries(MIDIVideoPlayer PRIVATE juce::juce_audio_utils juce::juce_gui_extra juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
