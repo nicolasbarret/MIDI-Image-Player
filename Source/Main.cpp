@@ -1,4 +1,5 @@
 #include <JuceHeader.h>
+#include "LibVlcPlayer.h"
 
 #include <array>
 #include <vector>
@@ -285,50 +286,31 @@ private:
 
 struct PreparedClip
 {
-    std::vector<juce::File> frames;
-    juce::Image firstFrame;
+    std::vector<juce::Image> frames;
     double sourceStart = 0.0;
 };
 using PreparedClipArray = std::array<PreparedClip, 12>;
 
-class ClipFramePlayer final : public juce::Component,
-                              private juce::Timer,
-                              private juce::Thread
+class ClipFramePlayer final : public juce::Component, private juce::Timer
 {
 public:
     ClipFramePlayer()
-        : juce::Thread("MIDI clip frame decoder")
     {
         setOpaque(true);
-        startThread();
         startTimerHz(FrameRate);
-    }
-
-    ~ClipFramePlayer() override
-    {
-        stopTimer();
-        signalThreadShouldExit();
-        notify();
-        stopThread(3000);
     }
 
     void setClips(PreparedClipArray incoming, double secondsPerClip)
     {
-        {
-            const juce::ScopedLock sl(lock);
-            clips = std::move(incoming);
-            clipDuration = juce::jlimit(1.0, 8.0, secondsPerClip);
-            activeClip = -1;
-            playing = false;
-            paused = false;
-            currentImage = juce::Image();
-            displayedFrame = -1;
-            ++decodeGeneration;
-            for (auto& entry : frameCache)
-                entry = CachedFrame{};
-        }
+        const juce::ScopedLock sl(lock);
+        clips = std::move(incoming);
+        clipDuration = juce::jlimit(1.0, 8.0, secondsPerClip);
+        activeClip = -1;
+        playing = false;
+        paused = false;
+        currentImage = juce::Image();
+        displayedFrame = -1;
         repaint();
-        notify();
     }
 
     bool trigger(int clipIndex)
@@ -339,7 +321,7 @@ public:
                 return false;
 
             auto& clip = clips[(size_t) clipIndex];
-            if (clip.frames.empty() || !clip.firstFrame.isValid())
+            if (clip.frames.empty() || !clip.frames.front().isValid())
                 return false;
 
             activeClip = clipIndex;
@@ -347,14 +329,9 @@ public:
             paused = false;
             startTimeMs = juce::Time::getMillisecondCounter();
             pausedElapsedMs = 0;
-            wantedFrame = 0;
             displayedFrame = 0;
-            currentImage = clip.firstFrame;
-            ++decodeGeneration;
-            for (auto& entry : frameCache)
-                entry = {};
+            currentImage = clip.frames.front();
         }
-        notify();
         repaint();
         return true;
     }
@@ -367,9 +344,6 @@ public:
         paused = false;
         currentImage = juce::Image();
         displayedFrame = -1;
-        ++decodeGeneration;
-        for (auto& entry : frameCache)
-            entry = {};
         repaint();
     }
 
@@ -380,16 +354,6 @@ public:
         {
             pausedElapsedMs = juce::Time::getMillisecondCounter() - startTimeMs;
             paused = true;
-        }
-    }
-
-    void resume()
-    {
-        const juce::ScopedLock sl(lock);
-        if (playing && paused)
-        {
-            startTimeMs = juce::Time::getMillisecondCounter() - pausedElapsedMs;
-            paused = false;
         }
     }
 
@@ -424,22 +388,14 @@ public:
     }
 
 private:
-    static constexpr int FrameRate = 30;
-    static constexpr int CacheSlots = 16;
-
-    struct CachedFrame
-    {
-        int frameIndex = -1;
-        std::uint64_t generation = 0;
-        juce::Image image;
-    };
+    static constexpr int FrameRate = 24;
 
     void timerCallback() override
     {
         bool changed = false;
         {
             const juce::ScopedLock sl(lock);
-            if (activeClip < 0 || paused)
+            if (activeClip < 0 || paused || !playing)
                 return;
 
             const auto& clip = clips[(size_t) activeClip];
@@ -447,119 +403,37 @@ private:
                 return;
 
             const auto elapsedMs = juce::Time::getMillisecondCounter() - startTimeMs;
-            if (elapsedMs >= (std::uint32_t) (clipDuration * 1000.0))
-                playing = false;
-
-            const int lastFrame = (int) clip.frames.size() - 1;
-            const int wanted = juce::jlimit(0, lastFrame,
+            const int wanted = juce::jlimit(0, (int) clip.frames.size() - 1,
                 (int) ((double) elapsedMs * FrameRate / 1000.0));
-            wantedFrame = wanted;
 
-            if (wanted == 0)
+            if (wanted < (int) clip.frames.size() && wanted != displayedFrame)
             {
-                if (displayedFrame != 0)
+                const auto& next = clip.frames[(size_t) wanted];
+                if (next.isValid())
                 {
-                    currentImage = clip.firstFrame;
-                    displayedFrame = 0;
-                    changed = true;
-                }
-            }
-            else
-            {
-                auto& cached = frameCache[(size_t) (wanted % CacheSlots)];
-                if (cached.frameIndex == wanted &&
-                    cached.generation == decodeGeneration &&
-                    cached.image.isValid() && displayedFrame != wanted)
-                {
-                    currentImage = cached.image;
+                    currentImage = next;
                     displayedFrame = wanted;
                     changed = true;
                 }
             }
+
+            if (elapsedMs >= (std::uint32_t) (clipDuration * 1000.0))
+                playing = false;
         }
         if (changed)
             repaint();
-        notify();
-    }
-
-    void run() override
-    {
-        std::uint64_t seenGeneration = UINT64_MAX;
-        int nextFrame = 1;
-
-        while (!threadShouldExit())
-        {
-            juce::File frameFile;
-            int clipIndex = -1;
-            int frameIndex = -1;
-            std::uint64_t generation = 0;
-
-            {
-                const juce::ScopedLock sl(lock);
-                if (decodeGeneration != seenGeneration)
-                {
-                    seenGeneration = decodeGeneration;
-                    nextFrame = 1;
-                }
-
-                if (activeClip >= 0)
-                {
-                    const auto& clip = clips[(size_t) activeClip];
-                    const int lastFrame = (int) clip.frames.size() - 1;
-                    if (lastFrame >= 1)
-                    {
-                        // Skip frames that are already too late, rather than building
-                        // a backlog that would make a new MIDI hit arrive late.
-                        if (nextFrame < wantedFrame)
-                            nextFrame = wantedFrame;
-
-                        if (nextFrame <= juce::jmin(lastFrame, wantedFrame + 8))
-                        {
-                            frameFile = clip.frames[(size_t) nextFrame];
-                            clipIndex = activeClip;
-                            frameIndex = nextFrame;
-                            generation = decodeGeneration;
-                        }
-                    }
-                }
-            }
-
-            if (frameFile.existsAsFile())
-            {
-                auto decoded = juce::ImageFileFormat::loadFrom(frameFile);
-                {
-                    const juce::ScopedLock sl(lock);
-                    if (generation == decodeGeneration &&
-                        activeClip == clipIndex && decoded.isValid())
-                    {
-                        auto& slot = frameCache[(size_t) (frameIndex % CacheSlots)];
-                        slot.frameIndex = frameIndex;
-                        slot.generation = generation;
-                        slot.image = std::move(decoded);
-                    }
-                }
-                ++nextFrame;
-            }
-            else
-            {
-                wait(2);
-            }
-        }
     }
 
     mutable juce::CriticalSection lock;
-    juce::Image currentImage;
     PreparedClipArray clips;
-    std::array<CachedFrame, CacheSlots> frameCache{};
+    juce::Image currentImage;
     int activeClip = -1;
-    int wantedFrame = 0;
     int displayedFrame = -1;
     bool playing = false;
     bool paused = false;
     double clipDuration = 3.0;
     std::uint32_t startTimeMs = 0;
     std::uint32_t pausedElapsedMs = 0;
-    std::uint64_t decodeGeneration = 0;
 };
 
 class ClipCacheJob final : public juce::ThreadPoolJob
@@ -580,22 +454,25 @@ public:
     JobStatus runJob() override
     {
         PreparedClipArray prepared;
-        juce::String status;
+        juce::StringArray errors;
         auto appFolder = juce::File::getSpecialLocation(juce::File::currentApplicationFile)
                              .getParentDirectory();
         auto ffmpeg = appFolder.getChildFile("ffmpeg.exe");
 
         if (!source.existsAsFile())
-            status = "La vidéo source est introuvable.";
+            errors.add("Vidéo source introuvable.");
         else if (!ffmpeg.existsAsFile())
-            status = "ffmpeg.exe est introuvable à côté du programme.";
+            errors.add("ffmpeg.exe absent du dossier du logiciel.");
         else
         {
             auto cacheRoot = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
                                  .getChildFile("MIDI Video Player").getChildFile("ClipCache");
             cacheRoot.createDirectory();
 
-            juce::String cacheKey = juce::String::toHexString(source.getFullPathName().hashCode64())
+            // Version the cache so old 30 fps / 720p files are never mistaken
+            // for the fully-preloaded 24 fps / 854x480 image sets.
+            juce::String cacheKey = "frames_v2_24fps_854x480_"
+                                  + juce::String::toHexString(source.getFullPathName().hashCode64())
                                   + "_" + juce::String::toHexString(source.getSize())
                                   + "_" + juce::String(source.getLastModificationTime().toMilliseconds())
                                   + "_" + juce::String((int) (clipDuration * 1000.0));
@@ -604,8 +481,8 @@ public:
 
             auto projectCache = cacheRoot.getChildFile(cacheKey);
             projectCache.createDirectory();
-            int readyCount = 0;
 
+            int readyCount = 0;
             for (int i = 0; i < 12 && !shouldExit(); ++i)
             {
                 if (markerStarts[(size_t) i] < 0.0)
@@ -613,8 +490,10 @@ public:
 
                 auto noteFolder = projectCache.getChildFile("note_" + juce::String(i));
                 auto completeFlag = noteFolder.getChildFile("complete.txt");
+                juce::Array<juce::File> found;
+                noteFolder.findChildFiles(found, juce::File::findFiles, false, "*.jpg");
 
-                if (!completeFlag.existsAsFile())
+                if (!completeFlag.existsAsFile() || found.isEmpty())
                 {
                     noteFolder.deleteRecursively();
                     noteFolder.createDirectory();
@@ -624,55 +503,71 @@ public:
                     args.add(ffmpeg.getFullPathName());
                     args.add("-hide_banner");
                     args.add("-loglevel"); args.add("error");
+                    args.add("-threads"); args.add("1");
                     args.add("-y");
                     args.add("-ss"); args.add(juce::String(markerStarts[(size_t) i], 3));
                     args.add("-i"); args.add(source.getFullPathName());
                     args.add("-t"); args.add(juce::String(clipDuration, 2));
                     args.add("-an");
                     args.add("-vf");
-                    args.add("fps=30,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1");
-                    args.add("-q:v"); args.add("4");
+                    args.add("fps=24,scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,setsar=1");
+                    args.add("-q:v"); args.add("5");
                     args.add("-start_number"); args.add("0");
                     args.add(outputPattern.getFullPathName());
 
                     juce::ChildProcess process;
-                    if (process.start(args))
+                    if (!process.start(args))
                     {
-                        while (!process.waitForProcessToFinish(250) && !shouldExit()) {}
-                        if (shouldExit())
-                        {
-                            process.kill();
-                            return jobHasFinished;
-                        }
+                        errors.add("FFmpeg n'a pas pu démarrer pour la note " + juce::String(notes[(size_t) i]) + ".");
+                        continue;
+                    }
+
+                    while (!process.waitForProcessToFinish(200) && !shouldExit()) {}
+                    if (shouldExit())
+                    {
+                        process.kill();
+                        process.waitForProcessToFinish(1000);
+                        return jobHasFinished;
                     }
                 }
 
-                juce::Array<juce::File> found;
+                found.clear();
                 noteFolder.findChildFiles(found, juce::File::findFiles, false, "*.jpg");
                 std::vector<juce::File> frameFiles;
-                for (const auto& f : found)
-                    frameFiles.push_back(f);
+                for (const auto& file : found)
+                    frameFiles.push_back(file);
                 std::sort(frameFiles.begin(), frameFiles.end(),
                           [](const juce::File& a, const juce::File& b)
                           {
                               return a.getFileName() < b.getFileName();
                           });
 
-                if (!frameFiles.empty())
+                auto& clip = prepared[(size_t) i];
+                for (const auto& file : frameFiles)
                 {
-                    auto first = juce::ImageFileFormat::loadFrom(frameFiles.front());
-                    if (first.isValid())
-                    {
-                        prepared[(size_t) i].frames = std::move(frameFiles);
-                        prepared[(size_t) i].firstFrame = std::move(first);
-                        prepared[(size_t) i].sourceStart = markerStarts[(size_t) i];
-                        completeFlag.replaceWithText("ready");
-                        ++readyCount;
-                    }
+                    if (shouldExit())
+                        return jobHasFinished;
+                    auto image = juce::ImageFileFormat::loadFrom(file);
+                    if (image.isValid())
+                        clip.frames.push_back(std::move(image));
+                }
+
+                if (!clip.frames.empty())
+                {
+                    clip.sourceStart = markerStarts[(size_t) i];
+                    completeFlag.replaceWithText("ready");
+                    ++readyCount;
+                }
+                else
+                {
+                    errors.add("Aucune image extraite pour la note " + juce::String(notes[(size_t) i]) + ".");
                 }
             }
 
-            status = "Clips préparés : " + juce::String(readyCount) + " / 12";
+            if (readyCount > 0)
+                errors.insert(0, "Clips prêts : " + juce::String(readyCount) + " / 12");
+            else if (errors.isEmpty())
+                errors.add("Aucun clip à préparer : ajoute des marqueurs.");
         }
 
         if (callback && !shouldExit())
@@ -681,7 +576,7 @@ public:
             juce::MessageManager::callAsync(
                 [finished = std::move(finished),
                  data = std::move(prepared),
-                 message = status]() mutable
+                 message = errors.joinIntoString("  |  ")]() mutable
                 {
                     finished(std::move(data), message);
                 });
@@ -702,7 +597,7 @@ class VideoOutputView final : public juce::Component,
 {
 public:
     explicit VideoOutputView(std::shared_ptr<VideoState> s)
-        : state(std::move(s)), sourceVideo(false)
+        : state(std::move(s))
     {
         addAndMakeVisible(sourceVideo);
         addAndMakeVisible(clipPlayer);
@@ -724,7 +619,7 @@ public:
     {
         cancelPendingUpdate();
         sourceVideo.stop();
-        sourceVideo.closeVideo();
+        sourceVideo.unload();
         const juce::ScopedLock sl(state->lock);
         state->dispatchPlayback = {};
     }
@@ -739,16 +634,17 @@ public:
     {
         syncFile();
         if (!loadedFile.existsAsFile())
-            return "Aucune vidéo chargée dans la Sortie OBS.";
+            return "Aucune vidéo chargée.";
+        if (!sourceVideo.isAvailable())
+            return sourceVideo.errorMessage();
 
         clipPlayer.stop();
         clipPlayer.setVisible(false);
         sourceVideo.setVisible(true);
-        sourceVideo.setPlaySpeed(1.0);
+        sourceVideo.setBlackoutAlpha(0);
         sourceVideo.play();
         clipMode = false;
-        return loadSucceeded ? "Aperçu source actif (lecteur vidéo JUCE)."
-                             : "Aperçu source indisponible : " + loadError;
+        return sourceVideo.playbackDiagnostic();
     }
 
     void pause()
@@ -756,7 +652,7 @@ public:
         if (clipMode)
             clipPlayer.pause();
         else
-            sourceVideo.stop();
+            sourceVideo.pause();
     }
 
     void stop()
@@ -776,32 +672,27 @@ public:
         clipPlayer.stop();
         clipPlayer.setVisible(false);
         sourceVideo.setVisible(true);
+        sourceVideo.setBlackoutAlpha(0);
         clipMode = false;
-        if (sourceVideo.isVideoOpen())
-        {
-            sourceVideo.setPlayPosition(juce::jmax(0.0, seconds));
-            sourceVideo.setPlaySpeed(1.0);
-        }
+        sourceVideo.setPlayPosition(juce::jmax(0.0, seconds));
     }
 
     double position() const
     {
-        return clipMode ? clipPlayer.position()
-                        : (sourceVideo.isVideoOpen() ? sourceVideo.getPlayPosition() : 0.0);
+        return clipMode ? clipPlayer.position() : sourceVideo.getPlayPosition();
     }
 
     double duration() const
     {
-        return sourceVideo.isVideoOpen() ? sourceVideo.getVideoDuration() : 0.0;
+        return sourceVideo.getVideoDuration();
     }
 
     juce::String diagnostic() const
     {
         if (clipMode)
-            return clipPlayer.isPlaying() ? "Clip MIDI en lecture (images pré-calculées)."
+            return clipPlayer.isPlaying() ? "Clip MIDI en lecture (images en mémoire)."
                                           : "Clip MIDI prêt.";
-        return loadSucceeded ? "Aperçu source prêt (lecteur vidéo JUCE)."
-                             : loadError;
+        return sourceVideo.playbackDiagnostic();
     }
 
     void setPreparedClips(PreparedClipArray clips, double clipSeconds)
@@ -812,13 +703,10 @@ public:
     void triggerClip(int pitchClass)
     {
         syncFile();
-        if (!clipMode)
-        {
-            sourceVideo.stop();
-            sourceVideo.setVisible(false);
-            clipPlayer.setVisible(true);
-            clipMode = true;
-        }
+        sourceVideo.pause();
+        sourceVideo.setVisible(false);
+        clipPlayer.setVisible(true);
+        clipMode = true;
         clipPlayer.trigger(pitchClass);
     }
 
@@ -839,19 +727,12 @@ private:
         if (file != loadedFile)
         {
             sourceVideo.stop();
-            sourceVideo.closeVideo();
+            sourceVideo.unload();
             loadedFile = file;
-            loadSucceeded = false;
-            loadError.clear();
-
             if (loadedFile.existsAsFile())
-            {
-                auto result = sourceVideo.load(loadedFile);
-                loadSucceeded = result.wasOk();
-                if (!loadSucceeded)
-                    loadError = result.getErrorMessage();
-            }
-
+                loadSucceeded = sourceVideo.load(loadedFile);
+            else
+                loadSucceeded = false;
             sourceVideo.setVisible(true);
             clipPlayer.setVisible(false);
             clipMode = false;
@@ -871,17 +752,16 @@ private:
             triggers.swap(state->pendingTriggers);
         }
 
-        // Process MIDI events in arrival order. Each event selects a prepared
-        // clip; no video decoder start, stop, or seek occurs here.
-        for (int pitchClass : triggers)
-            clipPlayer.trigger(pitchClass);
+        // The newest MIDI hit wins within one UI dispatch. All clip frames are
+        // already decoded in memory, so this is only an image selection.
+        if (!triggers.empty())
+            clipPlayer.trigger(triggers.back());
     }
 
     std::shared_ptr<VideoState> state;
-    juce::VideoComponent sourceVideo;
+    vlcplayer::VideoView sourceVideo;
     ClipFramePlayer clipPlayer;
     juce::File loadedFile;
-    juce::String loadError;
     bool loadSucceeded = false;
     bool clipMode = false;
 };
@@ -1027,7 +907,7 @@ private:
             waveformJobs.addJob(new WaveformJob(f,[safe](std::vector<float> p){if(safe) safe->setWaveformData(std::move(p));}),true);
             ensureOutputWindow();
             outputWindow->setVisible(true);outputWindow->toFront(true);
-            videoStatus.setText("Vidéo chargée dans la Sortie OBS : "+f.getFileName(),juce::dontSendNotification);
+            videoStatus.setText("Vidéo source chargée : "+f.getFileName()+" | Préparation des clips...",juce::dontSendNotification);
             settings->setValue("video",f.getFullPathName());settings->saveIfNeeded();
             rebuildClipCache();
         }else videoStatus.setText("Fichier vidéo introuvable : "+f.getFullPathName(),juce::dontSendNotification);
@@ -1047,7 +927,7 @@ private:
 
         ++clipCacheGeneration;
         const int generation = clipCacheGeneration;
-        clipJobs.removeAllJobs(true, 1000);
+        clipJobs.removeAllJobs(true, 0);
         ensureOutputWindow();
         // Prevent MIDI notes from triggering clips belonging to the previous
         // marker layout while the refreshed cache is being rendered.
@@ -1075,7 +955,7 @@ private:
                 safe->outputWindow->setPreparedClips(std::move(clips), seconds);
                 safe->videoStatus.setText(message, juce::dontSendNotification);
                 if (count == 0)
-                    safe->videoStatus.setText(message + " | Ajoute des marqueurs pour déclencher les notes.", juce::dontSendNotification);
+                    safe->videoStatus.setText(message + " | Vérifie que FFmpeg et les marqueurs sont disponibles.", juce::dontSendNotification);
             }), true);
     }
 
