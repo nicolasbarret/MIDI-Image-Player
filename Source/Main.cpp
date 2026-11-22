@@ -641,7 +641,7 @@ public:
         clipPlayer.stop();
         clipPlayer.setVisible(false);
         sourceVideo.setVisible(true);
-        sourceVideo.setBlackoutAlpha(0);
+        sourceVideo.setOutputVisible(true);
         sourceVideo.play();
         clipMode = false;
         return sourceVideo.playbackDiagnostic();
@@ -672,7 +672,7 @@ public:
         clipPlayer.stop();
         clipPlayer.setVisible(false);
         sourceVideo.setVisible(true);
-        sourceVideo.setBlackoutAlpha(0);
+        sourceVideo.setOutputVisible(true);
         clipMode = false;
         sourceVideo.setPlayPosition(juce::jmax(0.0, seconds));
     }
@@ -704,6 +704,7 @@ public:
     {
         syncFile();
         sourceVideo.pause();
+        sourceVideo.setOutputVisible(false);
         sourceVideo.setVisible(false);
         clipPlayer.setVisible(true);
         clipMode = true;
@@ -734,6 +735,7 @@ private:
             else
                 loadSucceeded = false;
             sourceVideo.setVisible(true);
+            sourceVideo.setOutputVisible(true);
             clipPlayer.setVisible(false);
             clipMode = false;
         }
