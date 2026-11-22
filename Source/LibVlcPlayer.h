@@ -210,6 +210,7 @@ public:
         pendingPlay = false;
         pendingPlaySlot = -1;
         pendingSeek = false;
+        pendingSeekSlot = -1;
         warmupActive = false;
         setBlackoutAlpha(255);
     }
@@ -220,6 +221,7 @@ public:
     {
         pendingSeekMs = (std::int64_t)(juce::jmax(0.0, seconds) * 1000.0);
         pendingSeek = true;
+        pendingSeekSlot = -1;
         play();
     }
 
@@ -262,6 +264,7 @@ public:
         pendingPlay = false;
         pendingPlaySlot = -1;
         pendingSeek = false;
+        pendingSeekSlot = -1;
         warmupActive = false;
     }
 
@@ -309,10 +312,12 @@ public:
         {
             Api::get().setTime(p, pendingSeekMs);
             pendingSeek = false;
+            pendingSeekSlot = -1;
         }
         else
         {
             pendingSeek = true;
+            pendingSeekSlot = -1;
         }
     }
 
@@ -422,14 +427,18 @@ private:
 
         Api::get().setHwnd(slot.player, videoHwnd);
         slot.lastPlayResult = Api::get().play(slot.player);
-        if (pendingSeek)
-        {
-            // Accurate seek on a decoder that is already initialised.
-            Api::get().setTime(slot.player, pendingSeekMs);
-            pendingSeek = false;
-        }
 
         activeSlot = selected;
+        if (pendingSeek)
+        {
+            // VLC ignores set_time until its input is genuinely playing.
+            // Apply it from the 120 Hz timer as soon as is_playing becomes true.
+            pendingSeekSlot = selected;
+        }
+        else
+        {
+            pendingSeekSlot = -1;
+        }
         nextSlot = (selected + 1) % PlayerPoolSize;
         pendingPlay = false;
         pendingPlaySlot = -1;
@@ -512,6 +521,17 @@ private:
 
         if (pendingPlay && ensureWindows())
             startPlayer(pendingPlaySlot);
+
+        if (pendingSeek && pendingSeekSlot >= 0 && pendingSeekSlot < PlayerPoolSize)
+        {
+            auto* p = slots[(size_t) pendingSeekSlot].player;
+            if (p && Api::get().isPlaying(p))
+            {
+                Api::get().setTime(p, pendingSeekMs);
+                pendingSeek = false;
+                pendingSeekSlot = -1;
+            }
+        }
 
         if (warmupActive && ensureWindows())
             serviceWarmup();
@@ -599,6 +619,7 @@ private:
     BYTE blackoutAlpha = 255;
     std::int64_t pendingSeekMs = 0;
     bool pendingSeek = false;
+    int pendingSeekSlot = -1;
     bool pendingPlay = false;
     int pendingPlaySlot = -1;
     bool warmupActive = false;
