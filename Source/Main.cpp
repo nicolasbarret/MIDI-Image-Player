@@ -234,8 +234,15 @@ public:
     }
     void mouseDoubleClick(const juce::MouseEvent&) override { zoom=1.0;viewStart=0.0;repaint(); }
     void mouseUp(const juce::MouseEvent&) override {
-        if(dragging && dragRow>=0){const juce::ScopedLock sl(state->lock);auto& v=state->markers[(size_t)dragRow];std::sort(v.begin(),v.end());}
-        dragging=false;dragIndex=-1;if(changed)changed();
+        const bool markerWasDragged = dragging && dragRow >= 0 && dragIndex >= 0;
+        if(markerWasDragged){
+            const juce::ScopedLock sl(state->lock);
+            auto& v=state->markers[(size_t)dragRow];
+            std::sort(v.begin(),v.end());
+        }
+        dragging=false;dragIndex=-1;
+        // Clicking the waveform to seek must never regenerate every MIDI clip.
+        if(markerWasDragged && changed)changed();
     }
 private:
     double visibleDuration() const { return duration/zoom; }
@@ -795,8 +802,6 @@ public:
         auto path=settings->getValue("video");
         clipDuration = juce::jlimit(1.0, 8.0, settings->getDoubleValue("clipDuration", 3.0));
         for(int i=0;i<12;++i){auto key="markers"+juce::String(i);state->markers[(size_t)i]=parseMarkers(settings->getValue(key));}
-        if(path.isNotEmpty()){juce::File f(path);if(f.existsAsFile())loadVideo(f);}
-
         addAndMakeVisible(timeline);videoStatus.setColour(juce::Label::textColourId,juce::Colour(0xff39ff14));videoStatus.setText("Aucune vidéo chargée",juce::dontSendNotification);
         setLookAndFeel(&readableLookAndFeel);
         addAndMakeVisible(newProject);addAndMakeVisible(openProject);addAndMakeVisible(saveProject);addAndMakeVisible(saveAsProject);
@@ -843,10 +848,21 @@ public:
         outputButton.setButtonText("Ouvrir la sortie vidéo OBS");outputButton.onClick=[this]{ensureOutputWindow();outputWindow->setVisible(true);outputWindow->toFront(true);};
         refreshMidi();setSize(1120,850);
         auto recovery=recoveryProjectFile();
-        if(recovery.existsAsFile() && recovery.getSize()>0) loadProjectFile(recovery);
-        else {
+        bool restoredProject = false;
+        if(recovery.existsAsFile() && recovery.getSize()>0) {
+            loadProjectFile(recovery);
+            restoredProject = true;
+        } else {
             auto last=settings->getValue("lastProject");
-            if(last.isNotEmpty() && juce::File(last).existsAsFile()) loadProjectFile(juce::File(last));
+            if(last.isNotEmpty() && juce::File(last).existsAsFile()) {
+                loadProjectFile(juce::File(last));
+                restoredProject = true;
+            }
+        }
+        // Fall back to the last selected video only when there is no project to restore.
+        if(!restoredProject && path.isNotEmpty()) {
+            juce::File f(path);
+            if(f.existsAsFile()) loadVideo(f);
         }
         startTimerHz(10);
     }
