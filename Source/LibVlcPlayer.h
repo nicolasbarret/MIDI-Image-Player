@@ -133,7 +133,9 @@ public:
 
     bool isAvailable() const
     {
-        return usablePlayerCount() > 0;
+        // Availability means LibVLC player objects were created. Media objects
+        // only exist after load(), so do not require them at this stage.
+        return createdPlayerCount() > 0;
     }
 
     juce::String errorMessage() const
@@ -142,14 +144,14 @@ public:
             return "LibVLC introuvable. Le dossier VLC doit être à côté du programme.";
         if (!Api::get().instance)
             return "Impossible d'initialiser LibVLC. Vérifie le dossier VLC et ses greffons.";
-        if (usablePlayerCount() == 0)
+        if (createdPlayerCount() == 0)
             return "Impossible de créer les lecteurs LibVLC.";
         return {};
     }
 
     bool load(const juce::File& file)
     {
-        if (!file.existsAsFile() || usablePlayerCount() == 0)
+        if (!file.existsAsFile() || createdPlayerCount() == 0)
             return false;
 
         stop();
@@ -367,6 +369,15 @@ private:
         int lastPlayResult = 0;
         bool warmed = false;
     };
+
+    int createdPlayerCount() const
+    {
+        int count = 0;
+        for (const auto& slot : slots)
+            if (slot.player)
+                ++count;
+        return count;
+    }
 
     int usablePlayerCount() const
     {
