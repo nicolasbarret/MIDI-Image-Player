@@ -163,6 +163,7 @@ public:
         loadedFile = file;
         pendingSeek = false;
         pendingSeekMs = 0;
+        pendingPlay = false;
         ensureWindows();
         return true;
     }
@@ -177,6 +178,7 @@ public:
         }
         loadedFile = {};
         pendingSeek = false;
+        pendingPlay = false;
     }
 
     void play()
@@ -208,6 +210,7 @@ public:
             Api::get().stop(player);
         seekWhenPlaying = false;
         pendingSeek = false;
+        pendingPlay = false;
     }
 
     bool isPlaying() const
