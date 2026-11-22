@@ -6,6 +6,7 @@
 #include <memory>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace {
 class ReadableLookAndFeel final : public juce::LookAndFeel_V4 {
@@ -1114,7 +1115,9 @@ private:
         auto data=juce::JSON::parse(file.loadFileAsString());
         if(!data.isObject()){videoStatus.setText("Projet illisible ou endommagé",juce::dontSendNotification);return;}
         auto* obj=data.getDynamicObject();auto markers=obj->getProperty("markers");
-        clipDuration = juce::jlimit(1.0, 8.0, (double) obj->getProperty("clipDuration"));
+        const double savedClipDuration = obj->hasProperty("clipDuration")
+                                           ? (double) obj->getProperty("clipDuration") : 3.0;
+        clipDuration = juce::jlimit(1.0, 8.0, savedClipDuration);
         if (clipDurationChoice.getSelectedId() != (int) clipDuration)
             clipDurationChoice.setSelectedId((int) clipDuration, juce::dontSendNotification);
         settings->setValue("clipDuration", clipDuration);
