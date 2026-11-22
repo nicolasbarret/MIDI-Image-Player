@@ -200,7 +200,15 @@ public:
         {const juce::ScopedLock sl(state->lock);auto& v=state->markers[(size_t)row];
          for(size_t i=0;i<v.size();++i){double dx=std::abs(v[i]-clicked);if(dx<best){best=dx;dragIndex=(int)i;}}}
         if(eraseMode){
-            if(dragIndex>=0){const juce::ScopedLock sl(state->lock);auto& v=state->markers[(size_t)row];if(dragIndex<(int)v.size())v.erase(v.begin()+dragIndex);if(changed)changed();}
+            bool erased=false;
+            if(dragIndex>=0){
+                {
+                    const juce::ScopedLock sl(state->lock);
+                    auto& v=state->markers[(size_t)row];
+                    if(dragIndex<(int)v.size()){v.erase(v.begin()+dragIndex);erased=true;}
+                }
+            }
+            if(erased && changed)changed();
             dragging=false;repaint();return;
         }
         if(dragIndex>=0){dragging=true;moveMarker(clicked);} else {dragging=false;{const juce::ScopedLock sl(state->lock);state->playhead=juce::jlimit(0.0,duration,clicked);}if(seeked)seeked(clicked);repaint();}
@@ -313,11 +321,11 @@ public:
             activeClip = -1;
             playing = false;
             paused = false;
-            currentImage = {};
+            currentImage = juce::Image();
             displayedFrame = -1;
             ++decodeGeneration;
             for (auto& entry : frameCache)
-                entry = {};
+                entry = CachedFrame{};
         }
         repaint();
         notify();
@@ -357,7 +365,7 @@ public:
         activeClip = -1;
         playing = false;
         paused = false;
-        currentImage = {};
+        currentImage = juce::Image();
         displayedFrame = -1;
         ++decodeGeneration;
         for (auto& entry : frameCache)
@@ -540,6 +548,7 @@ private:
     }
 
     mutable juce::CriticalSection lock;
+    juce::Image currentImage;
     PreparedClipArray clips;
     std::array<CachedFrame, CacheSlots> frameCache{};
     int activeClip = -1;
@@ -1040,6 +1049,9 @@ private:
         const int generation = clipCacheGeneration;
         clipJobs.removeAllJobs(true, 1000);
         ensureOutputWindow();
+        // Prevent MIDI notes from triggering clips belonging to the previous
+        // marker layout while the refreshed cache is being rendered.
+        outputWindow->clearPreparedClips();
 
         if (!source.existsAsFile())
         {
@@ -1131,7 +1143,12 @@ private:
         settings->setValue("input",obj->getProperty("midiInput").toString());settings->setValue("output",obj->getProperty("midiOutput").toString());
         settings->saveIfNeeded();currentProject=(file==recoveryProjectFile()?juce::File{}:file);projectDirty=false;
         auto videoFile=juce::File(videoPath);
-        if(videoFile.existsAsFile()) loadVideo(videoFile); else {const juce::ScopedLock sl(state->lock);state->file=videoFile;videoStatus.setText("Vidéo introuvable : "+videoPath,juce::dontSendNotification);}
+        if(videoFile.existsAsFile()) loadVideo(videoFile);
+        else {
+            {const juce::ScopedLock sl(state->lock);state->file=videoFile;}
+            rebuildClipCache();
+            videoStatus.setText("Vidéo introuvable : "+videoPath,juce::dontSendNotification);
+        }
         timeline.setDuration(state->duration>0.0?state->duration:60.0);timeline.repaint();refreshMidi();
         if(videoPath.isEmpty()) videoStatus.setText("Projet chargé : aucune vidéo associée",juce::dontSendNotification);
         else if(!videoFile.existsAsFile()) videoStatus.setText("Projet chargé, vidéo introuvable : "+videoPath,juce::dontSendNotification);
