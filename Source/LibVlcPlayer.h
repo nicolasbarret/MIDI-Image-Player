@@ -35,7 +35,7 @@ struct Api
     int (__cdecl *isPlaying)(Player*) = nullptr;
     std::int64_t (__cdecl *getTime)(Player*) = nullptr;
     std::int64_t (__cdecl *getLength)(Player*) = nullptr;
-    void (__cdecl *setTime)(Player*, std::int64_t, int) = nullptr;
+    void (__cdecl *setTime)(Player*, std::int64_t) = nullptr;
     void (__cdecl *setVolume)(Player*, int) = nullptr;
     void (__cdecl *setMute)(Player*, int) = nullptr;
 
@@ -232,7 +232,10 @@ public:
         if (!player || !media) return;
         pendingSeekMs = (std::int64_t)(juce::jmax(0.0, seconds) * 1000.0);
         pendingSeek = true;
-        applyPendingSeek();
+        // A seek requested while paused is applied immediately after play() restarts
+        // the decoder. Seeking a stopped/paused LibVLC player can delay the next frame.
+        if (isPlaying())
+            applyPendingSeek();
     }
 
     void setMuted(bool muted)
@@ -283,18 +286,18 @@ private:
             Api::get().setHwnd(player, videoHwnd);
             lastPlayResult = Api::get().play(player);
             pendingPlay = false;
+            if (pendingSeek)
+                applyPendingSeek();
         }
-        if (pendingSeek)
-            applyPendingSeek();
     }
 
     void applyPendingSeek()
     {
         if (player && media && pendingSeek)
         {
-            // Fast seek asks VLC to jump to the nearest keyframe immediately.
-            // This trades a little frame precision for much lower trigger latency.
-            Api::get().setTime(player, pendingSeekMs, 1);
+            // Start/restart the player first, then apply the precise seek.
+            // Avoid VLC's fast-keyframe mode: it was less consistent on rapid triggers.
+            Api::get().setTime(player, pendingSeekMs);
             pendingSeek = false;
         }
     }
