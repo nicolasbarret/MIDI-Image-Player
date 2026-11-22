@@ -123,6 +123,7 @@ public:
         if (player && Api::get().releasePlayer)
             Api::get().releasePlayer(player);
         player = nullptr;
+        destroyVideoWindow();
     }
 
     bool isAvailable() const
@@ -182,10 +183,15 @@ public:
     {
         if (!player || !media)
             return;
-        ensureWindows();
+        if (!ensureWindows())
+        {
+            pendingPlay = true;
+            return;
+        }
         if (videoHwnd && IsWindow(videoHwnd))
             Api::get().setHwnd(player, videoHwnd);
         lastPlayResult = Api::get().play(player);
+        pendingPlay = false;
         if (pendingSeek)
             seekWhenPlaying = true;
     }
@@ -262,21 +268,58 @@ public:
 
     void setBlackoutAlpha(int) {}
 
+    void setOutputVisible(bool visible)
+    {
+        outputVisible = visible;
+        if (videoHwnd && IsWindow(videoHwnd))
+        {
+            positionWindows();
+            ShowWindow(videoHwnd, visible ? SW_SHOWNA : SW_HIDE);
+            SetWindowPos(videoHwnd, visible ? HWND_TOP : HWND_BOTTOM, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+
     void resized() override
     {
-        ensureWindows();
+        if (ensureWindows())
+            positionWindows();
     }
 
     void parentHierarchyChanged() override
     {
-        ensureWindows();
+        if (ensureWindows())
+            positionWindows();
     }
 
 private:
+    void positionWindows()
+    {
+        if (!parentHwnd || !videoHwnd || !IsWindow(parentHwnd) || !IsWindow(videoHwnd))
+            return;
+        auto screen = getScreenBounds();
+        POINT p{ screen.getX(), screen.getY() };
+        ScreenToClient(parentHwnd, &p);
+        SetWindowPos(videoHwnd, HWND_TOP, p.x, p.y,
+                     juce::jmax(1, screen.getWidth()),
+                     juce::jmax(1, screen.getHeight()),
+                     SWP_NOACTIVATE);
+    }
+
+    void destroyVideoWindow()
+    {
+        if (videoHwnd && IsWindow(videoHwnd))
+            DestroyWindow(videoHwnd);
+        videoHwnd = nullptr;
+        parentHwnd = nullptr;
+    }
     void timerCallback() override
     {
         if ((!videoHwnd || !IsWindow(videoHwnd)) && isShowing())
             ensureWindows();
+
+        if (pendingPlay && ensureWindows())
+            play();
 
         if (seekWhenPlaying && player && isPlaying())
         {
@@ -299,13 +342,23 @@ private:
 
         if (parentHwnd != parent || !videoHwnd || !IsWindow(videoHwnd))
         {
+            destroyVideoWindow();
             parentHwnd = parent;
-            videoHwnd = parentHwnd;
+            videoHwnd = CreateWindowExW(0, L"STATIC", L"",
+                                        WS_CHILD | WS_CLIPSIBLINGS,
+                                        0, 0, 1, 1, parentHwnd, nullptr,
+                                        GetModuleHandleW(nullptr), nullptr);
+            if (!videoHwnd)
+                return false;
+            if (player && media)
+                Api::get().setHwnd(player, videoHwnd);
+            positionWindows();
+            ShowWindow(videoHwnd, outputVisible ? SW_SHOWNA : SW_HIDE);
         }
 
         if (player && media)
             Api::get().setHwnd(player, videoHwnd);
-        return true;
+        return videoHwnd != nullptr && IsWindow(videoHwnd);
     }
 
     Api::Player* player = nullptr;
@@ -317,6 +370,8 @@ private:
     int lastPlayResult = 0;
     bool pendingSeek = false;
     bool seekWhenPlaying = false;
+    bool pendingPlay = false;
+    bool outputVisible = true;
 };
 }
 #else
