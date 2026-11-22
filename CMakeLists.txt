@@ -17,4 +17,4 @@ if(MSVC)
   # Keep accented French UI strings consistently UTF-8 on Windows.
   target_compile_options(MIDIVideoPlayer PRIVATE /utf-8)
 endif()
-target_link_libraries(MIDIVideoPlayer PRIVATE juce::juce_audio_utils juce::juce_gui_extra juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+target_link_libraries(MIDIVideoPlayer PRIVATE juce::juce_audio_utils juce::juce_video juce::juce_gui_extra juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
