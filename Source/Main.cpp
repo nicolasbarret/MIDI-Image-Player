@@ -907,7 +907,10 @@ private:
             waveformJobs.addJob(new WaveformJob(f,[safe](std::vector<float> p){if(safe) safe->setWaveformData(std::move(p));}),true);
             ensureOutputWindow();
             outputWindow->setVisible(true);outputWindow->toFront(true);
-            videoStatus.setText("Vidéo source chargée : "+f.getFileName()+" | Préparation des clips...",juce::dontSendNotification);
+            // Start the source preview immediately so the user can position markers
+            // without needing an extra Play click after loading a file.
+            const auto previewStatus = outputWindow->playVideo();
+            videoStatus.setText("Vidéo source : "+previewStatus+" | Préparation des clips...",juce::dontSendNotification);
             settings->setValue("video",f.getFullPathName());settings->saveIfNeeded();
             rebuildClipCache();
         }else videoStatus.setText("Fichier vidéo introuvable : "+f.getFullPathName(),juce::dontSendNotification);
