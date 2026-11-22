@@ -13,7 +13,7 @@ jobs:
         run: cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=Release
       - name: Build
         run: cmake --build build --config Release --parallel
-      - name: Package application and VLC runtime
+      - name: Package application and FFmpeg runtime
         shell: pwsh
         run: |
           $exe = Get-ChildItem -Path "build" -Filter "MIDI Video Player.exe" -Recurse | Select-Object -First 1
@@ -22,22 +22,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path "package/MIDI Video Player" | Out-Null
           Copy-Item $exe.FullName "package/MIDI Video Player/"
 
-          # Bundle FFmpeg to extract an audio waveform from the selected video.
+          # FFmpeg extracts pre-rendered JPEG frame clips and builds the audio waveform.
           $ffmpegArchive = "ffmpeg-essentials.zip"
           Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $ffmpegArchive
           Expand-Archive -Path $ffmpegArchive -DestinationPath "ffmpeg-extracted" -Force
           $ffmpegExe = Get-ChildItem -Path "ffmpeg-extracted" -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1
           if (-not $ffmpegExe) { throw "ffmpeg.exe was not found in the FFmpeg archive." }
           Copy-Item (Join-Path $ffmpegExe.DirectoryName "*") "package/MIDI Video Player/" -Recurse -Force
-
-          # Bundle the official portable VLC runtime so users do not need to install codecs.
-          $vlcArchive = "vlc-win64.zip"
-          Invoke-WebRequest -Uri "https://download.videolan.org/pub/videolan/vlc/last/win64/vlc-3.0.24-win64.zip" -OutFile $vlcArchive
-          Expand-Archive -Path $vlcArchive -DestinationPath "vlc-extracted" -Force
-          $libvlc = Get-ChildItem -Path "vlc-extracted" -Filter "libvlc.dll" -Recurse | Select-Object -First 1
-          if (-not $libvlc) { throw "libvlc.dll was not found in the official VLC archive." }
-          New-Item -ItemType Directory -Force -Path "package/MIDI Video Player/VLC" | Out-Null
-          Copy-Item (Join-Path $libvlc.DirectoryName "*") "package/MIDI Video Player/VLC/" -Recurse -Force
 
           Compress-Archive -Path "package/MIDI Video Player" -DestinationPath "MIDI-Video-Player-Windows-x64.zip" -Force
       - uses: actions/upload-artifact@v4
