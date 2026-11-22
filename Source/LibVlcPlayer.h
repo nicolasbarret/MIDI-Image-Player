@@ -385,6 +385,7 @@ class VideoView final : public juce::Component
 public:
     bool isAvailable() const { return false; }
     juce::String errorMessage() const { return "Ce lecteur vidéo est actuellement prévu pour Windows."; }
+    juce::String playbackDiagnostic() const { return errorMessage(); }
     bool load(const juce::File&) { return false; }
     void unload() {}
     void play() {}
@@ -398,6 +399,7 @@ public:
     void setMuted(bool) {}
     void setVolume(int) {}
     void setBlackoutAlpha(int) {}
+    void setOutputVisible(bool) {}
 };
 }
 #endif
