@@ -939,6 +939,8 @@ public:
         clipPlayer.setClips({}, 3.0);
         audioClipSource.stop();
     }
+    void setPreviewDuration(double seconds) { clipPreviewDuration = juce::jlimit(1.0, 8.0, seconds); }
+
     void configureAudio() {
         juce::DialogWindow::LaunchOptions options;
         options.dialogTitle="Sortie audio vers FL Studio";
@@ -997,8 +999,6 @@ private:
         sourceVideo.play();
         previewEndMs=juce::Time::getMillisecondCounter()+(juce::uint32)juce::roundToInt(clipPreviewDuration*1000.0);
     }
-    void setPreviewDuration(double seconds){clipPreviewDuration=juce::jlimit(1.0,8.0,seconds);}
-
     void handleAsyncUpdate() override
     {
         std::deque<int> triggers;
