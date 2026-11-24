@@ -1311,7 +1311,8 @@ private:
         {
             if(outputWindow)
                 outputWindow->clearPreparedClip(changedNote);
-            if(preloadNoteIndex == changedNote && preloadIsRunning())
+            // Also invalidate a just-finished job whose UI callback may still be queued.
+            if(preloadNoteIndex == changedNote)
                 cancelPreload("Marqueur " + juce::String(notes[(size_t)changedNote])
                               + " modifié. Préchargement annulé.");
             else if(!preloadIsRunning())
