@@ -1042,6 +1042,7 @@ private:
         syncFile();
         if(previewEndMs!=0 && juce::Time::getMillisecondCounter()>=previewEndMs) {
             sourceVideo.pause();
+            previewAudioTransport.stop();
             previewEndMs=0;
         }
     }
@@ -1303,7 +1304,7 @@ private:
             {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=0.0;state->playhead=0.0;state->pendingTriggers.clear();}
             timeline.setDuration(60.0);timeline.setWaveform({});timeline.repaint();
             juce::Component::SafePointer<MainView> safe(this);
-            waveformJobs.addJob(new WaveformJob(f,[safe](std::vector<float> p, juce::File audio){if(safe){safe->setWaveformData(std::move(p));safe->setPreviewAudioFile(audio);}}),true);
+            waveformJobs.addJob(new WaveformJob(f,[safe, source=f](std::vector<float> p, juce::File audio){if(safe){bool current=false;{const juce::ScopedLock sl(safe->state->lock);current=(safe->state->file==source);}if(current){safe->setWaveformData(std::move(p));safe->setPreviewAudioFile(audio);}}}),true);
             ensureOutputWindow();
             outputWindow->setVisible(true);outputWindow->toFront(true);
             // Start the source preview immediately so the user can position markers
