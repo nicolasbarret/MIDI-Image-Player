@@ -23,8 +23,22 @@ jobs:
           Copy-Item $exe.FullName "package/MIDI Video Player/"
 
           # FFmpeg extracts and pre-decodes MIDI clips in the background.
+          function Download-WithRetry {
+            param([string]$Uri, [string]$Destination)
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+              try {
+                Invoke-WebRequest -Uri $Uri -OutFile $Destination -TimeoutSec 180
+                return
+              } catch {
+                Write-Warning "Download failed on attempt $attempt/5: $Uri"
+                if ($attempt -eq 5) { throw }
+                Start-Sleep -Seconds (5 * $attempt)
+              }
+            }
+          }
+
           $ffmpegArchive = "ffmpeg-essentials.zip"
-          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $ffmpegArchive
+          Download-WithRetry -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -Destination $ffmpegArchive
           Expand-Archive -Path $ffmpegArchive -DestinationPath "ffmpeg-extracted" -Force
           $ffmpegExe = Get-ChildItem -Path "ffmpeg-extracted" -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1
           if (-not $ffmpegExe) { throw "ffmpeg.exe was not found in the FFmpeg archive." }
@@ -33,7 +47,7 @@ jobs:
           # VLC is retained only for source-video preview and marker positioning.
           # MIDI note triggers never call VLC.
           $vlcArchive = "vlc-win64.zip"
-          Invoke-WebRequest -Uri "https://download.videolan.org/pub/videolan/vlc/last/win64/vlc-3.0.24-win64.zip" -OutFile $vlcArchive
+          Download-WithRetry -Uri "https://download.videolan.org/pub/videolan/vlc/last/win64/vlc-3.0.24-win64.zip" -Destination $vlcArchive
           Expand-Archive -Path $vlcArchive -DestinationPath "vlc-extracted" -Force
           $libvlc = Get-ChildItem -Path "vlc-extracted" -Filter "libvlc.dll" -Recurse | Select-Object -First 1
           if (-not $libvlc) { throw "libvlc.dll was not found in the official VLC archive." }
