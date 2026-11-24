@@ -1063,8 +1063,8 @@ public:
         play.setButtonText("Lire / Pause");play.onClick=[this]{ensureOutputWindow();if(outputWindow->isVideoPlaying()){outputWindow->pauseVideo();videoStatus.setText("Lecture en pause",juce::dontSendNotification);}else{outputWindow->setVisible(true);outputWindow->toFront(true);auto result=outputWindow->playVideo();videoStatus.setText(result,juce::dontSendNotification);}};
         addMarker.setButtonText("Ajouter un repère à la position");addMarker.onClick=[this]{addCurrentMarker();};
         eraseMarker.setButtonText("Gomme désactivée");eraseMarker.setClickingTogglesState(true);eraseMarker.onClick=[this]{bool on=eraseMarker.getToggleState();eraseMarker.setButtonText(on?"Gomme activée : cliquer un repère":"Gomme désactivée");timeline.setEraseMode(on);};
-        for(int i=0;i<MaxNotes;++i)noteChoice.addItem(noteLabel(i),i+1);
-        noteChoice.setSelectedId(1);
+        rebuildNoteChoice();
+        noteChoice.setSelectedId(1,juce::dontSendNotification);
         octaveChoice.addItem("1 octave",1);octaveChoice.addItem("2 octaves",2);octaveChoice.addItem("3 octaves",3);octaveChoice.addItem("4 octaves",4);
         octaveChoice.setSelectedId(state->octaveCount);
         octaveChoice.onChange=[this]{changeOctaveCount(octaveChoice.getSelectedId());};
@@ -1128,9 +1128,16 @@ public:
         count=juce::jlimit(1,MaxOctaves,count);
         { const juce::ScopedLock sl(state->lock); state->octaveCount=count; }
         settings->setValue("octaveCount",count); settings->saveIfNeeded();
-        if(noteChoice.getSelectedId()>count*PitchCount) noteChoice.setSelectedId(1);
+        rebuildNoteChoice();
         timeline.refreshHeight(); timelineViewport.setViewPosition(0,0);
         markProjectDirty(); updatePreloadSelectionText();
+    }
+    void rebuildNoteChoice() {
+        const int previous=noteChoice.getSelectedId();
+        int count=1; { const juce::ScopedLock sl(state->lock); count=state->octaveCount; }
+        noteChoice.clear(juce::dontSendNotification);
+        for(int i=0;i<count*PitchCount;++i) noteChoice.addItem(noteLabel(i),i+1);
+        noteChoice.setSelectedId(juce::jlimit(1,count*PitchCount,previous>0?previous:1),juce::dontSendNotification);
     }
     void resized() override {
         auto a=getLocalBounds().reduced(22);a.removeFromTop(72);
@@ -1397,6 +1404,7 @@ private:
             videoPath=obj->getProperty("video").toString();
             state->playhead=0.0;
         }
+        rebuildNoteChoice();
         settings->setValue("input",obj->getProperty("midiInput").toString());settings->setValue("output",obj->getProperty("midiOutput").toString());
         settings->saveIfNeeded();currentProject=(file==recoveryProjectFile()?juce::File{}:file);projectDirty=false;
         auto videoFile=juce::File(videoPath);
