@@ -631,6 +631,10 @@ public:
                 }
                 else
                 {
+                    // FFmpeg has finished writing this marker's JPEG cache.
+                    // Mark it complete before RAM decoding so a cancelled RAM pass
+                    // can resume from disk without extracting the video again.
+                    completeFlag.replaceWithText("ready");
                     setFeedback(0.62, "Chargement en RAM de " + noteName + " : 0 / "
                                       + juce::String(total) + " images");
                     for (int i = 0; i < total; ++i)
@@ -1062,7 +1066,7 @@ private:
             // Start the source preview immediately so the user can position markers
             // without needing an extra Play click after loading a file.
             const auto previewStatus = outputWindow->playVideo();
-            videoStatus.setText("Vidéo source : "+previewStatus+" | Préparation des clips...",juce::dontSendNotification);
+            videoStatus.setText("Vidéo source : "+previewStatus+" | Préchargement MIDI manuel.",juce::dontSendNotification);
             settings->setValue("video",f.getFullPathName());settings->saveIfNeeded();
             cancelPreload("Vidéo chargée. Place un marqueur puis clique sur Précharger.");
             if(outputWindow) outputWindow->clearPreparedClips();
@@ -1091,6 +1095,9 @@ private:
         ++preloadGeneration;
         clipJobs.removeAllJobs(true, 0);
         preloadNoteIndex = -1;
+        // A cancelled worker keeps its own feedback object and cannot overwrite
+        // progress for a later preload operation.
+        preloadFeedback = std::make_shared<ClipPreloadFeedback>();
         setPreloadMessage(reason);
         lastPreloadMessage = {};
         preloadProgressValue = 0.0;
@@ -1151,6 +1158,7 @@ private:
         ++preloadGeneration;
         const int generation = preloadGeneration;
         clipJobs.removeAllJobs(true, 0);
+        preloadFeedback = std::make_shared<ClipPreloadFeedback>();
         preloadNoteIndex = note;
         setPreloadMessage("Préparation manuelle de " + juce::String(notes[(size_t) note])
                           + " depuis " + juce::String(markerStart, 3) + " s...",
@@ -1306,7 +1314,7 @@ private:
             if(preloadNoteIndex == changedNote && preloadIsRunning())
                 cancelPreload("Marqueur " + juce::String(notes[(size_t)changedNote])
                               + " modifié. Préchargement annulé.");
-            else
+            else if(!preloadIsRunning())
                 setPreloadMessage("Repère " + juce::String(notes[(size_t)changedNote])
                                   + " modifié. Clique sur Précharger quand sa position te convient.");
             lastPreloadMessage = {};
