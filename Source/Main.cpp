@@ -818,15 +818,21 @@ public:
         clipPlayer.clearClip(noteIndex);
     }
 
-    void triggerClip(int pitchClass)
+    bool triggerClip(int pitchClass)
     {
         syncFile();
+
+        // Do not hide the working VLC source view unless the requested MIDI clip
+        // is actually prepared and can start. This also makes missing clips harmless.
+        if (!clipPlayer.trigger(pitchClass))
+            return false;
+
         sourceVideo.pause();
         sourceVideo.setOutputVisible(false);
         sourceVideo.setVisible(false);
         clipPlayer.setVisible(true);
         clipMode = true;
-        clipPlayer.trigger(pitchClass);
+        return true;
     }
 
     void clearPreparedClips()
@@ -872,10 +878,11 @@ private:
             triggers.swap(state->pendingTriggers);
         }
 
-        // The newest MIDI hit wins within one UI dispatch. All clip frames are
-        // already decoded in memory, so this is only an image selection.
+        // Route MIDI hits through triggerClip(), not directly to ClipFramePlayer.
+        // triggerClip() performs the essential VLC -> prepared-frame display switch.
+        // The newest MIDI hit wins within one UI dispatch.
         if (!triggers.empty())
-            clipPlayer.trigger(triggers.back());
+            triggerClip(triggers.back());
     }
 
     std::shared_ptr<VideoState> state;
