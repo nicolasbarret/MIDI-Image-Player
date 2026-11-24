@@ -134,7 +134,7 @@ public:
     std::function<void(int)> changed;
     std::function<void(double)> seeked;
     void setDuration(double d){duration=juce::jmax(0.01,d);viewStart=juce::jlimit(0.0,juce::jmax(0.0,d-visibleDuration()),viewStart);repaint();}
-    int requiredHeight() const { int n=1; { const juce::ScopedLock sl(state->lock); n=state->octaveCount*PitchCount; } return 25+n*22+60; }
+    int requiredHeight() const { int n=1; { const juce::ScopedLock sl(state->lock); n=state->octaveCount*PitchCount; } return 25+n*16+60; }
     void refreshHeight(){setSize(getWidth(),requiredHeight());repaint();}
     void setWaveform(std::vector<float> peaks){waveform=std::move(peaks);repaint();}
     void setEraseMode(bool enabled){eraseMode=enabled;setMouseCursor(enabled?juce::MouseCursor::CrosshairCursor:juce::MouseCursor::PointingHandCursor);repaint();}
@@ -311,12 +311,15 @@ public:
     void prepareToPlay(int, double rate) override { const juce::ScopedLock sl(lock); outputRate=juce::jmax(1.0,rate); position=0.0; }
     void releaseResources() override { const juce::ScopedLock sl(lock); clip.reset(); position=0.0; }
     void setClip(std::shared_ptr<juce::AudioBuffer<float>> audio,double rate) {
-        const juce::ScopedLock sl(lock); clip=std::move(audio); sourceRate=juce::jmax(1.0,rate); position=0.0;
+        const juce::ScopedLock sl(lock); clip=std::move(audio); sourceRate=juce::jmax(1.0,rate); position=0.0; paused=false;
     }
+    void pause(){const juce::ScopedLock sl(lock);paused=true;}
+    void resume(){const juce::ScopedLock sl(lock);paused=false;}
+    void stop(){const juce::ScopedLock sl(lock);clip.reset();position=0.0;paused=false;}
     void getNextAudioBlock(const juce::AudioSourceChannelInfo& info) override {
         info.clearActiveBufferRegion();
         const juce::ScopedLock sl(lock);
-        if(!clip || clip->getNumSamples()==0) return;
+        if(paused || !clip || clip->getNumSamples()==0) return;
         const int outChannels=info.buffer->getNumChannels(), sourceChannels=clip->getNumChannels();
         for(int i=0;i<info.numSamples;++i) {
             const int index=(int)position;
@@ -335,6 +338,7 @@ private:
     juce::CriticalSection lock;
     std::shared_ptr<juce::AudioBuffer<float>> clip;
     double sourceRate=44100.0, outputRate=44100.0, position=0.0;
+    bool paused=false;
 };
 
 class ClipFramePlayer final : public juce::Component, private juce::Timer
@@ -707,6 +711,7 @@ public:
                         // then decode it into RAM before the MIDI clip is made ready.
                         auto audioFile = noteFolder.getChildFile("audio_44100_stereo.wav");
                         if (!audioFile.existsAsFile()) {
+                            auto partialAudioFile = noteFolder.getChildFile("audio_44100_stereo.partial.wav");
                             juce::StringArray audioArgs;
                             audioArgs.add(ffmpeg.getFullPathName()); audioArgs.add("-hide_banner");
                             audioArgs.add("-loglevel"); audioArgs.add("error"); audioArgs.add("-y");
@@ -715,9 +720,16 @@ public:
                             audioArgs.add("-t"); audioArgs.add(juce::String(clipDuration,3));
                             audioArgs.add("-vn"); audioArgs.add("-map"); audioArgs.add("0:a:0?");
                             audioArgs.add("-ac"); audioArgs.add("2"); audioArgs.add("-ar"); audioArgs.add("44100");
-                            audioArgs.add("-c:a"); audioArgs.add("pcm_s16le"); audioArgs.add(audioFile.getFullPathName());
+                            audioArgs.add("-c:a"); audioArgs.add("pcm_s16le"); audioArgs.add(partialAudioFile.getFullPathName());
                             juce::ChildProcess audioProcess;
-                            if(audioProcess.start(audioArgs)) audioProcess.waitForProcessToFinish(120000);
+                            if(audioProcess.start(audioArgs)) {
+                                bool finishedAudio=false;
+                                while(!finishedAudio && !shouldExit())
+                                    finishedAudio=audioProcess.waitForProcessToFinish(120);
+                                if(shouldExit()) { audioProcess.kill(); audioProcess.waitForProcessToFinish(1000); return jobHasFinished; }
+                                if(finishedAudio && partialAudioFile.existsAsFile() && partialAudioFile.getSize()>44)
+                                    partialAudioFile.moveFileTo(audioFile);
+                            }
                         }
                         if(audioFile.existsAsFile() && audioFile.getSize()>44) {
                             juce::AudioFormatManager audioFormats; audioFormats.registerBasicFormats();
@@ -835,6 +847,7 @@ public:
             return sourceVideo.errorMessage();
 
         clipPlayer.stop();
+        audioClipSource.stop();
         clipPlayer.setVisible(false);
         sourceVideo.setVisible(true);
         sourceVideo.setOutputVisible(true);
@@ -845,16 +858,17 @@ public:
 
     void pause()
     {
-        if (clipMode)
+        if (clipMode) {
             clipPlayer.pause();
-        else
-            sourceVideo.pause();
+            audioClipSource.pause();
+        } else sourceVideo.pause();
     }
 
     void stop()
     {
         sourceVideo.stop();
         clipPlayer.stop();
+        audioClipSource.stop();
     }
 
     bool isPlaying() const
@@ -866,6 +880,7 @@ public:
     {
         syncFile();
         clipPlayer.stop();
+        audioClipSource.stop();
         clipPlayer.setVisible(false);
         sourceVideo.setVisible(true);
         sourceVideo.setOutputVisible(true);
@@ -922,7 +937,7 @@ public:
     void clearPreparedClips()
     {
         clipPlayer.setClips({}, 3.0);
-        audioClipSource.setClip(nullptr,44100.0);
+        audioClipSource.stop();
     }
     void configureAudio() {
         juce::DialogWindow::LaunchOptions options;
