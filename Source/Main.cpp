@@ -264,37 +264,61 @@ private:
 
 class WaveformJob final : public juce::ThreadPoolJob {
 public:
-    WaveformJob(juce::File f, std::function<void(std::vector<float>)> cb) : ThreadPoolJob("Audio waveform"), source(std::move(f)), callback(std::move(cb)) {}
+    WaveformJob(juce::File f, std::function<void(std::vector<float>, juce::File)> cb)
+        : ThreadPoolJob("Audio waveform and preview audio"), source(std::move(f)), callback(std::move(cb)) {}
     JobStatus runJob() override {
         std::vector<float> peaks(18000, 0.0f);
         auto app=juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory();
         auto ffmpeg=app.getChildFile("ffmpeg.exe");
-        auto wav=juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("mvp-waveform", ".wav", false);
-        if(ffmpeg.existsAsFile() && source.existsAsFile()) {
-            juce::StringArray args; args.add(ffmpeg.getFullPathName()); args.add("-y"); args.add("-i"); args.add(source.getFullPathName());
-            args.add("-vn"); args.add("-ac"); args.add("1"); args.add("-ar"); args.add("8000"); args.add("-f"); args.add("wav"); args.add(wav.getFullPathName());
+        auto cache=juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                       .getChildFile("MIDI Video Player").getChildFile("AudioCache");
+        cache.createDirectory();
+        const auto key=juce::String::toHexString(source.getFullPathName().hashCode64())+"_"
+                     +juce::String(source.getSize())+"_"
+                     +juce::String(source.getLastModificationTime().toMilliseconds());
+        auto wav=cache.getChildFile(key+"_preview_44100_stereo.wav");
+        if(ffmpeg.existsAsFile() && source.existsAsFile() && !wav.existsAsFile()) {
+            auto partial=cache.getChildFile(key+"_preview.partial.wav");
+            juce::StringArray args; args.add(ffmpeg.getFullPathName()); args.add("-hide_banner");
+            args.add("-loglevel"); args.add("error"); args.add("-y"); args.add("-i"); args.add(source.getFullPathName());
+            args.add("-vn"); args.add("-ac"); args.add("2"); args.add("-ar"); args.add("44100");
+            args.add("-c:a"); args.add("pcm_s16le"); args.add(partial.getFullPathName());
             juce::ChildProcess process;
-            if(process.start(args) && process.waitForProcessToFinish(120000) && wav.existsAsFile()) {
-                juce::AudioFormatManager fm; fm.registerBasicFormats();
-                std::unique_ptr<juce::AudioFormatReader> reader(fm.createReaderFor(wav));
-                if(reader && reader->lengthInSamples>0) {
-                    const auto total=reader->lengthInSamples; juce::AudioBuffer<float> buffer(1,8192);
-                    for(juce::int64 offset=0;offset<total && !shouldExit();offset+=8192) {
-                        int count=(int)juce::jmin((juce::int64)8192,total-offset);
-                        if(!reader->read(&buffer,0,count,offset,true,false)) break;
-                        for(int i=0;i<count;++i) { int bin=juce::jmin(17999,(int)(((offset+i)*18000)/total)); peaks[(size_t)bin]=juce::jmax(peaks[(size_t)bin],std::abs(buffer.getSample(0,i))); }
+            if(process.start(args) && process.waitForProcessToFinish(120000) && partial.existsAsFile() && partial.getSize()>44)
+                partial.moveFileTo(wav);
+            else partial.deleteFile();
+        }
+        if(wav.existsAsFile()) {
+            juce::AudioFormatManager fm; fm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> reader(fm.createReaderFor(wav));
+            if(reader && reader->lengthInSamples>0) {
+                const auto total=reader->lengthInSamples;
+                juce::AudioBuffer<float> buffer(juce::jmax(1,(int)reader->numChannels),8192);
+                for(juce::int64 offset=0;offset<total && !shouldExit();offset+=8192) {
+                    int count=(int)juce::jmin((juce::int64)8192,total-offset);
+                    if(!reader->read(&buffer,0,count,offset,true,reader->numChannels>1)) break;
+                    for(int i=0;i<count;++i) {
+                        float sample=0.0f;
+                        for(int ch=0;ch<buffer.getNumChannels();++ch) sample+=std::abs(buffer.getSample(ch,i));
+                        sample/=buffer.getNumChannels();
+                        int bin=juce::jmin(17999,(int)(((offset+i)*18000)/total));
+                        peaks[(size_t)bin]=juce::jmax(peaks[(size_t)bin],sample);
                     }
-                    float maximum=0.0f; for(float p:peaks) maximum=juce::jmax(maximum,p);
-                    if(maximum>0.0001f) for(auto& p:peaks) p/=maximum;
                 }
+                float maximum=0.0f; for(float p:peaks) maximum=juce::jmax(maximum,p);
+                if(maximum>0.0001f) for(auto& p:peaks) p/=maximum;
             }
         }
-        wav.deleteFile();
-        if(callback && !shouldExit()) { auto cb=std::move(callback); juce::MessageManager::callAsync([cb=std::move(cb), data=std::move(peaks)]() mutable { cb(std::move(data)); }); }
+        if(callback && !shouldExit()) {
+            auto cb=std::move(callback);
+            juce::MessageManager::callAsync([cb=std::move(cb), data=std::move(peaks), audio=wav]() mutable {
+                cb(std::move(data), audio.existsAsFile()?audio:juce::File{});
+            });
+        }
         return jobHasFinished;
     }
 private:
-    juce::File source; std::function<void(std::vector<float>)> callback;
+    juce::File source; std::function<void(std::vector<float>, juce::File)> callback;
 };
 
 struct PreparedClip
@@ -806,7 +830,9 @@ public:
         addAndMakeVisible(sourceVideo);
         addAndMakeVisible(clipPlayer);
         audioDeviceManager.initialise(0,2,nullptr,true);
-        audioSourcePlayer.setSource(&audioClipSource);
+        audioMixer.addInputSource(&previewAudioTransport, false);
+        audioMixer.addInputSource(&audioClipSource, false);
+        audioSourcePlayer.setSource(&audioMixer);
         audioDeviceManager.addAudioCallback(&audioSourcePlayer);
         clipPlayer.setVisible(false);
 
@@ -829,6 +855,9 @@ public:
         sourceVideo.unload();
         audioDeviceManager.removeAudioCallback(&audioSourcePlayer);
         audioSourcePlayer.setSource(nullptr);
+        audioMixer.removeAllInputs();
+        previewAudioTransport.setSource(nullptr);
+        previewAudioReader.reset();
         audioDeviceManager.closeAudioDevice();
         const juce::ScopedLock sl(state->lock);
         state->dispatchPlayback = {};
@@ -853,6 +882,8 @@ public:
         clipPlayer.setVisible(false);
         sourceVideo.setVisible(true);
         sourceVideo.setOutputVisible(true);
+        audioClipSource.stop();
+        previewAudioTransport.start();
         sourceVideo.play();
         clipMode = false;
         return sourceVideo.playbackDiagnostic();
@@ -863,12 +894,13 @@ public:
         if (clipMode) {
             clipPlayer.pause();
             audioClipSource.pause();
-        } else sourceVideo.pause();
+        } else { sourceVideo.pause(); previewAudioTransport.stop(); }
     }
 
     void stop()
     {
         sourceVideo.stop();
+        previewAudioTransport.stop();
         clipPlayer.stop();
         audioClipSource.stop();
     }
@@ -888,6 +920,7 @@ public:
         sourceVideo.setOutputVisible(true);
         clipMode = false;
         sourceVideo.setPlayPosition(juce::jmax(0.0, seconds));
+        previewAudioTransport.setPosition(juce::jmax(0.0, seconds));
     }
 
     double position() const
@@ -927,6 +960,7 @@ public:
         if (!clipPlayer.trigger(pitchClass))
             return false;
         audioClipSource.setClip(clipPlayer.audioForClip(pitchClass),clipPlayer.audioRateForClip(pitchClass));
+        previewAudioTransport.stop();
 
         sourceVideo.pause();
         sourceVideo.setOutputVisible(false);
@@ -943,8 +977,25 @@ public:
     }
     void setOutputMuted(bool muted)
     {
-        sourceVideo.setMuted(muted);
+        previewAudioTransport.setGain(muted ? 0.0f : 1.0f);
         audioClipSource.setMuted(muted);
+    }
+
+    void setPreviewAudioFile(const juce::File& file)
+    {
+        previewAudioTransport.stop();
+        previewAudioTransport.setSource(nullptr);
+        previewAudioReader.reset();
+        if (!file.existsAsFile()) return;
+        juce::AudioFormatManager formats;
+        formats.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+        if (!reader) return;
+        const double sampleRate = reader->sampleRate;
+        previewAudioReader = std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
+        previewAudioTransport.setSource(previewAudioReader.get(), 32768, nullptr, sampleRate, 2);
+        previewAudioTransport.setPosition(sourceVideo.getPlayPosition());
+        if (sourceVideo.isPlaying()) previewAudioTransport.start();
     }
     void setPreviewDuration(double seconds) { clipPreviewDuration = juce::jlimit(1.0, 8.0, seconds); }
 
@@ -972,6 +1023,7 @@ private:
         if (file != loadedFile)
         {
             sourceVideo.stop();
+            previewAudioTransport.stop();
             sourceVideo.unload();
             loadedFile = file;
             if (loadedFile.existsAsFile())
@@ -1003,6 +1055,8 @@ private:
         sourceVideo.setOutputVisible(true);
         clipMode=false;
         sourceVideo.setPlayPosition(juce::jmax(0.0,seconds));
+        previewAudioTransport.setPosition(juce::jmax(0.0,seconds));
+        previewAudioTransport.start();
         sourceVideo.play();
         previewEndMs=juce::Time::getMillisecondCounter()+(juce::uint32)juce::roundToInt(clipPreviewDuration*1000.0);
     }
@@ -1039,6 +1093,9 @@ private:
     juce::uint32 previewEndMs=0;
     double clipPreviewDuration=2.0;
     ClipAudioSource audioClipSource;
+    juce::AudioTransportSource previewAudioTransport;
+    std::unique_ptr<juce::AudioFormatReaderSource> previewAudioReader;
+    juce::MixerAudioSource audioMixer;
     juce::AudioDeviceManager audioDeviceManager;
     juce::AudioSourcePlayer audioSourcePlayer;
 };
@@ -1060,6 +1117,7 @@ public:
     juce::String videoDiagnostic() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->diagnostic(); return "Sortie OBS non ouverte"; }
     void configureAudio() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->configureAudio(); }
     void setOutputMuted(bool muted) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setOutputMuted(muted); }
+    void setPreviewAudioFile(const juce::File& f) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setPreviewAudioFile(f); }
     void setPreviewDuration(double seconds){if(auto* v=dynamic_cast<VideoOutputView*>(getContentComponent()))v->setPreviewDuration(seconds);}
     void setPreparedClip(int noteIndex, PreparedClip clip, double seconds) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setPreparedClip(noteIndex, std::move(clip), seconds); }
     void clearPreparedClip(int noteIndex) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->clearPreparedClip(noteIndex); }
@@ -1166,6 +1224,7 @@ public:
         g.drawText("Départ Do3 | Les notes sont affichées à gauche de chaque piste. Teste un marqueur avant de le précharger.",24,42,getWidth()-48,22,juce::Justification::centredLeft);
     }
     void setWaveformData(std::vector<float> p) { timeline.setWaveform(std::move(p)); }
+    void setPreviewAudioFile(const juce::File& f){ensureOutputWindow();outputWindow->setPreviewAudioFile(f);}
     void changeOctaveCount(int count) {
         count=juce::jlimit(1,MaxOctaves,count);
         { const juce::ScopedLock sl(state->lock); state->octaveCount=count; }
@@ -1244,7 +1303,7 @@ private:
             {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=0.0;state->playhead=0.0;state->pendingTriggers.clear();}
             timeline.setDuration(60.0);timeline.setWaveform({});timeline.repaint();
             juce::Component::SafePointer<MainView> safe(this);
-            waveformJobs.addJob(new WaveformJob(f,[safe](std::vector<float> p){if(safe) safe->setWaveformData(std::move(p));}),true);
+            waveformJobs.addJob(new WaveformJob(f,[safe](std::vector<float> p, juce::File audio){if(safe){safe->setWaveformData(std::move(p));safe->setPreviewAudioFile(audio);}}),true);
             ensureOutputWindow();
             outputWindow->setVisible(true);outputWindow->toFront(true);
             // Start the source preview immediately so the user can position markers
