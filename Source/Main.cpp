@@ -986,7 +986,7 @@ public:
         }
         startTimerHz(10);
     }
-    ~MainView() override {outputWindow.reset();setLookAndFeel(nullptr);if(settings)settings->saveIfNeeded();}
+    ~MainView() override {cancelPreload("Fermeture du logiciel.");outputWindow.reset();setLookAndFeel(nullptr);if(settings)settings->saveIfNeeded();}
     void paint(juce::Graphics& g) override {
         g.fillAll(juce::Colour(0xff050705));
         g.setColour(juce::Colour(0xff39ff14));
