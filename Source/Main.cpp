@@ -948,7 +948,7 @@ public:
         options.resizable=false;
         options.content.setOwned(new juce::AudioDeviceSelectorComponent(audioDeviceManager,0,0,1,2,false,false,true,true));
         options.content->setSize(520,420);
-        options.runModal();
+        options.launchAsync();
     }
 
 private:
