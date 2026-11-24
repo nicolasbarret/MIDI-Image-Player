@@ -82,7 +82,7 @@ struct Api
             !setTime || !setVolume || !setMute)
             return;
 
-        const char* args[] = { "--no-video-title-show", "--quiet", "--no-snapshot-preview" };
+        const char* args[] = { "--no-video-title-show", "--quiet", "--no-snapshot-preview", "--no-audio" };
         instance = newInstance(3, args);
     }
 
