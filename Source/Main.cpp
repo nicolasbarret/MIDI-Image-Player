@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace {
 class ReadableLookAndFeel final : public juce::LookAndFeel_V4 {
@@ -103,20 +104,16 @@ private:
             if(m.isNoteOn()) {
                 const int midiNote=m.getNoteNumber();
                 const int clipIndex=midiNote-48; // MIDI Do3 is note 48
-                if(clipIndex<0 || clipIndex>=state->octaveCount*PitchCount) { if(output) output->sendMessageNow(m); return; }
-                auto& list=state->markers[(size_t)clipIndex];
-                if(!list.empty()) {
-                    double chosen=list.front(), best=std::abs(chosen-state->playhead);
-                    for(double t:list){double d=std::abs(t-state->playhead);if(d<best){best=d;chosen=t;}}
-                    state->playhead=chosen;
-                    // Note Off remains forwarded to loopMIDI/FL Studio, but it does not
-                    // pause the video. Short drum notes must not cut a running clip.
-                    // Keep the MIDI event sequence. The video output switches clips
-                    // without seeking or starting a decoder on the MIDI callback thread.
-                    state->pendingTriggers.push_back(clipIndex);
-                    while (state->pendingTriggers.size() > 128)
-                        state->pendingTriggers.pop_front();
-                    dispatch=true;
+                if(clipIndex>=0 && clipIndex<state->octaveCount*PitchCount) {
+                    auto& list=state->markers[(size_t)clipIndex];
+                    if(!list.empty()) {
+                        double chosen=list.front(), best=std::abs(chosen-state->playhead);
+                        for(double t:list){double d=std::abs(t-state->playhead);if(d<best){best=d;chosen=t;}}
+                        state->playhead=chosen;
+                        state->pendingTriggers.push_back(clipIndex);
+                        while(state->pendingTriggers.size()>128) state->pendingTriggers.pop_front();
+                        dispatch=true;
+                    }
                 }
             }
             if(dispatch) notify=state->dispatchPlayback;
@@ -137,6 +134,8 @@ public:
     std::function<void(int)> changed;
     std::function<void(double)> seeked;
     void setDuration(double d){duration=juce::jmax(0.01,d);viewStart=juce::jlimit(0.0,juce::jmax(0.0,d-visibleDuration()),viewStart);repaint();}
+    int requiredHeight() const { int n=1; { const juce::ScopedLock sl(state->lock); n=state->octaveCount*PitchCount; } return 25+n*22+60; }
+    void refreshHeight(){setSize(getWidth(),requiredHeight());repaint();}
     void setWaveform(std::vector<float> peaks){waveform=std::move(peaks);repaint();}
     void setEraseMode(bool enabled){eraseMode=enabled;setMouseCursor(enabled?juce::MouseCursor::CrosshairCursor:juce::MouseCursor::PointingHandCursor);repaint();}
     void paint(juce::Graphics& g) override {
@@ -146,14 +145,16 @@ public:
         g.drawText("Zoom x"+juce::String(zoom,1)+"   |   Molette : zoom   |   Maj + molette : déplacement",48,2,(int)r.getWidth()-60,19,juce::Justification::centredLeft);
         const float waveH=54.0f;
         const float trackArea=r.getHeight()-top-waveH-5.0f;
-        float trackH=trackArea/12.0f;
+        int activeNotes=1;
+        { const juce::ScopedLock sl(state->lock); activeNotes=state->octaveCount*PitchCount; }
+        float trackH=trackArea/(float)juce::jmax(1,activeNotes);
         g.setFont(ReadableLookAndFeel::uiFont(12.0f));
-        for(int i=0;i<12;++i){
+        for(int i=0;i<activeNotes;++i){
             float y=top+i*trackH;
             g.setColour(i%2?juce::Colour(0xff101810):juce::Colour(0xff0b100b));
             g.fillRect(left,y,r.getWidth()-left-right,trackH-1.0f);
             g.setColour(juce::Colour(0xffd8ffd1));
-            g.drawText(notes[(size_t)i],2,(int)y,42,(int)trackH,juce::Justification::centredLeft);
+            g.drawText(noteLabel(i),2,(int)y,42,(int)trackH,juce::Justification::centredLeft);
             const juce::ScopedLock sl(state->lock);
             for(double t:state->markers[(size_t)i]){
                 float x=timeToX(t,left,r.getWidth()-left-right);
@@ -191,7 +192,8 @@ public:
         auto r=getLocalBounds().toFloat(); float left=48.0f,right=12.0f,top=25.0f;
         const float waveH=54.0f;
         const float trackArea=r.getHeight()-top-waveH-5.0f;
-        float th=trackArea/12.0f;
+        int activeNotes=1; { const juce::ScopedLock sl(state->lock); activeNotes=state->octaveCount*PitchCount; }
+        float th=trackArea/(float)juce::jmax(1,activeNotes);
         float x=e.position.x; double clicked=xToTime(x,left,r.getWidth()-left-right);
         if(e.position.y>=top+trackArea) {
             clicked=juce::jlimit(0.0,duration,clicked);
@@ -200,7 +202,7 @@ public:
             repaint();
             return;
         }
-        int row=juce::jlimit(0,11,(int)((e.position.y-top)/th));
+        int row=juce::jlimit(0,activeNotes-1,(int)((e.position.y-top)/th));
         dragRow=row; dragIndex=-1; double best=visibleDuration()*8.0/juce::jmax(1.0f,r.getWidth()-60.0f);
         {const juce::ScopedLock sl(state->lock);auto& v=state->markers[(size_t)row];
          for(size_t i=0;i<v.size();++i){double dx=std::abs(v[i]-clicked);if(dx<best){best=dx;dragIndex=(int)i;}}}
@@ -298,9 +300,42 @@ private:
 struct PreparedClip
 {
     std::vector<juce::Image> frames;
+    std::shared_ptr<juce::AudioBuffer<float>> audio;
+    double audioSampleRate = 44100.0;
     double sourceStart = 0.0;
 };
 using PreparedClipArray = std::array<PreparedClip, MaxNotes>;
+
+class ClipAudioSource final : public juce::AudioSource {
+public:
+    void prepareToPlay(int, double rate) override { const juce::ScopedLock sl(lock); outputRate=juce::jmax(1.0,rate); position=0.0; }
+    void releaseResources() override { const juce::ScopedLock sl(lock); clip.reset(); position=0.0; }
+    void setClip(std::shared_ptr<juce::AudioBuffer<float>> audio,double rate) {
+        const juce::ScopedLock sl(lock); clip=std::move(audio); sourceRate=juce::jmax(1.0,rate); position=0.0;
+    }
+    void getNextAudioBlock(const juce::AudioSourceChannelInfo& info) override {
+        info.clearActiveBufferRegion();
+        const juce::ScopedLock sl(lock);
+        if(!clip || clip->getNumSamples()==0) return;
+        const int outChannels=info.buffer->getNumChannels(), sourceChannels=clip->getNumChannels();
+        for(int i=0;i<info.numSamples;++i) {
+            const int index=(int)position;
+            if(index>=clip->getNumSamples()) { clip.reset(); position=0.0; break; }
+            const int next=juce::jmin(index+1,clip->getNumSamples()-1);
+            const float frac=(float)(position-index);
+            for(int ch=0;ch<outChannels;++ch) {
+                const int src=juce::jmin(ch,sourceChannels-1);
+                const float a=clip->getSample(src,index), b=clip->getSample(src,next);
+                info.buffer->addSample(ch,info.startSample+i,a+(b-a)*frac);
+            }
+            position += sourceRate/outputRate;
+        }
+    }
+private:
+    juce::CriticalSection lock;
+    std::shared_ptr<juce::AudioBuffer<float>> clip;
+    double sourceRate=44100.0, outputRate=44100.0, position=0.0;
+};
 
 class ClipFramePlayer final : public juce::Component, private juce::Timer
 {
@@ -357,6 +392,15 @@ public:
             displayedFrame = -1;
         }
         repaint();
+    }
+
+    std::shared_ptr<juce::AudioBuffer<float>> audioForClip(int index) const {
+        const juce::ScopedLock sl(lock);
+        return index>=0 && index<(int)clips.size() ? clips[(size_t)index].audio : nullptr;
+    }
+    double audioRateForClip(int index) const {
+        const juce::ScopedLock sl(lock);
+        return index>=0 && index<(int)clips.size() ? clips[(size_t)index].audioSampleRate : 44100.0;
     }
 
     bool trigger(int clipIndex)
@@ -542,7 +586,7 @@ public:
                                  .getChildFile("ClipCache");
             cacheRoot.createDirectory();
 
-            juce::String cacheKey = "manual_v4_24fps_854x480_"
+            juce::String cacheKey = "manual_v5_24fps_854x480_audio_"
                                   + juce::String::toHexString(source.getFullPathName().hashCode64())
                                   + "_" + juce::String::toHexString(source.getSize())
                                   + "_" + juce::String(source.getLastModificationTime().toMilliseconds())
@@ -659,12 +703,41 @@ public:
                     if (!prepared.frames.empty())
                     {
                         prepared.sourceStart = markerStart;
+                        // Extract the matching source audio to a compact PCM cache,
+                        // then decode it into RAM before the MIDI clip is made ready.
+                        auto audioFile = noteFolder.getChildFile("audio_44100_stereo.wav");
+                        if (!audioFile.existsAsFile()) {
+                            juce::StringArray audioArgs;
+                            audioArgs.add(ffmpeg.getFullPathName()); audioArgs.add("-hide_banner");
+                            audioArgs.add("-loglevel"); audioArgs.add("error"); audioArgs.add("-y");
+                            audioArgs.add("-ss"); audioArgs.add(juce::String(markerStart,3));
+                            audioArgs.add("-i"); audioArgs.add(source.getFullPathName());
+                            audioArgs.add("-t"); audioArgs.add(juce::String(clipDuration,3));
+                            audioArgs.add("-vn"); audioArgs.add("-map"); audioArgs.add("0:a:0?");
+                            audioArgs.add("-ac"); audioArgs.add("2"); audioArgs.add("-ar"); audioArgs.add("44100");
+                            audioArgs.add("-c:a"); audioArgs.add("pcm_s16le"); audioArgs.add(audioFile.getFullPathName());
+                            juce::ChildProcess audioProcess;
+                            if(audioProcess.start(audioArgs)) audioProcess.waitForProcessToFinish(120000);
+                        }
+                        if(audioFile.existsAsFile() && audioFile.getSize()>44) {
+                            juce::AudioFormatManager audioFormats; audioFormats.registerBasicFormats();
+                            std::unique_ptr<juce::AudioFormatReader> audioReader(audioFormats.createReaderFor(audioFile));
+                            if(audioReader && audioReader->lengthInSamples>0) {
+                                const int channels=juce::jlimit(1,2,(int)audioReader->numChannels);
+                                const int samples=(int)juce::jmin((juce::int64)std::numeric_limits<int>::max(),audioReader->lengthInSamples);
+                                prepared.audio=std::make_shared<juce::AudioBuffer<float>>(channels,samples);
+                                if(audioReader->read(prepared.audio.get(),0,samples,0,true,channels>1)) {
+                                    prepared.audioSampleRate=audioReader->sampleRate;
+                                } else prepared.audio.reset();
+                            }
+                        }
                         completeFlag.replaceWithText("ready");
                         success = true;
                         message = noteName + " : " + juce::String(markerStart, 3)
                                 + " s → " + juce::String(markerStart + clipDuration, 3)
                                 + " s préchargées. " + juce::String((int) prepared.frames.size())
-                                + " images en RAM et en cache disque.";
+                                + " images et " + (prepared.audio ? "audio" : "aucun son")
+                                + " en RAM.";
                     }
                     else
                     {
@@ -718,6 +791,9 @@ public:
     {
         addAndMakeVisible(sourceVideo);
         addAndMakeVisible(clipPlayer);
+        audioDeviceManager.initialise(0,2,nullptr,true);
+        audioSourcePlayer.setSource(&audioClipSource);
+        audioDeviceManager.addAudioCallback(&audioSourcePlayer);
         clipPlayer.setVisible(false);
 
         juce::Component::SafePointer<VideoOutputView> safe(this);
@@ -737,6 +813,9 @@ public:
         cancelPendingUpdate();
         sourceVideo.stop();
         sourceVideo.unload();
+        audioDeviceManager.removeAudioCallback(&audioSourcePlayer);
+        audioSourcePlayer.setSource(nullptr);
+        audioDeviceManager.closeAudioDevice();
         const juce::ScopedLock sl(state->lock);
         state->dispatchPlayback = {};
     }
@@ -812,6 +891,7 @@ public:
         return sourceVideo.playbackDiagnostic();
     }
 
+    void configureAudio(){if(auto* v=dynamic_cast<VideoOutputView*>(getContentComponent()))v->configureAudio();}
     void setPreparedClip(int noteIndex, PreparedClip clip, double clipSeconds)
     {
         clipPlayer.setClip(noteIndex, std::move(clip), clipSeconds);
@@ -830,6 +910,7 @@ public:
         // is actually prepared and can start. This also makes missing clips harmless.
         if (!clipPlayer.trigger(pitchClass))
             return false;
+        audioClipSource.setClip(clipPlayer.audioForClip(pitchClass),clipPlayer.audioRateForClip(pitchClass));
 
         sourceVideo.pause();
         sourceVideo.setOutputVisible(false);
@@ -842,6 +923,18 @@ public:
     void clearPreparedClips()
     {
         clipPlayer.setClips({}, 3.0);
+        audioClipSource.setClip(nullptr,44100.0);
+    }
+    void configureAudio() {
+        juce::DialogWindow::LaunchOptions options;
+        options.dialogTitle="Sortie audio vers FL Studio";
+        options.dialogBackgroundColour=juce::Colour(0xff050705);
+        options.escapeKeyTriggersCloseButton=true;
+        options.useNativeTitleBar=true;
+        options.resizable=false;
+        options.content.setOwned(new juce::AudioDeviceSelectorComponent(audioDeviceManager,0,0,1,2,false,false,true,true));
+        options.content->setSize(520,420);
+        options.runModal();
     }
 
 private:
@@ -895,6 +988,9 @@ private:
     juce::File loadedFile;
     bool loadSucceeded = false;
     bool clipMode = false;
+    ClipAudioSource audioClipSource;
+    juce::AudioDeviceManager audioDeviceManager;
+    juce::AudioSourcePlayer audioSourcePlayer;
 };
 
 class OutputWindow final : public juce::DocumentWindow {
@@ -1135,7 +1231,7 @@ private:
             setPreloadMessage("Note " + noteLabel(note)
                               + " : aucun marqueur. Place-le avant de précharger.");
         else
-            setPreloadMessage("Note " + juce::String(notes[(size_t) note])
+            setPreloadMessage("Note " + noteLabel(note)
                               + " : repère à " + juce::String(marker, 3)
                               + " s. Préchargement manuel disponible.");
         lastPreloadMessage = {};
@@ -1164,7 +1260,7 @@ private:
         }
         if (markerStart < 0.0)
         {
-            setPreloadMessage("Aucun repère pour " + juce::String(notes[(size_t) note])
+            setPreloadMessage("Aucun repère pour " + noteLabel(note)
                               + ". Place le marqueur avant de précharger.");
             lastPreloadMessage = {};
             return;
@@ -1175,7 +1271,7 @@ private:
         clipJobs.removeAllJobs(true, 0);
         preloadFeedback = std::make_shared<ClipPreloadFeedback>();
         preloadNoteIndex = note;
-        setPreloadMessage("Préparation manuelle de " + juce::String(notes[(size_t) note])
+        setPreloadMessage("Préparation manuelle de " + noteLabel(note)
                           + " depuis " + juce::String(markerStart, 3) + " s...",
                           0.0, true);
         lastPreloadMessage = {};
@@ -1229,6 +1325,7 @@ private:
         for(int i=0;i<MaxNotes;++i) all.add(markerString(state->markers[(size_t)i]));
         obj->setProperty("markers",all);
         obj->setProperty("octaveCount",state->octaveCount);
+        obj->setProperty("octaveCount",state->octaveCount);
         return root;
     }
     bool writeProjectFile(const juce::File& file){
@@ -1270,7 +1367,10 @@ private:
         juce::String videoPath;
         {
             const juce::ScopedLock sl(state->lock);
-            for(int i=0;i<12;++i) state->markers[(size_t)i]=(markers.isArray()&&i<markers.size())?parseMarkers(markers[i].toString()):std::vector<double>{};
+            state->octaveCount=juce::jlimit(1,MaxOctaves,obj->hasProperty("octaveCount")?(int)obj->getProperty("octaveCount"):1);
+            octaveChoice.setSelectedId(state->octaveCount,juce::dontSendNotification);
+            settings->setValue("octaveCount",state->octaveCount);
+            for(int i=0;i<MaxNotes;++i) state->markers[(size_t)i]=(markers.isArray()&&i<markers.size())?parseMarkers(markers[i].toString()):std::vector<double>{};
             videoPath=obj->getProperty("video").toString();
             state->playhead=0.0;
         }
@@ -1332,7 +1432,7 @@ private:
                 cancelPreload("Marqueur " + noteLabel(changedNote)
                               + " modifié. Préchargement annulé.");
             else if(!preloadIsRunning())
-                setPreloadMessage("Repère " + juce::String(notes[(size_t)changedNote])
+                setPreloadMessage("Repère " + noteLabel(changedNote)
                                   + " modifié. Clique sur Précharger quand sa position te convient.");
             lastPreloadMessage = {};
         }
