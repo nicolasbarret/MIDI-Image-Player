@@ -65,11 +65,14 @@ public:
         g.drawRoundedRectangle(bounds, 5.0f, 1.1f);
     }
 };
+constexpr int PitchCount=12, MaxOctaves=4, MaxNotes=48;
 const std::array<const char*,12> notes{"Do","Do#","Ré","Ré#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"};
+static juce::String noteLabel(int i){return juce::String(notes[(size_t)(i%12)])+juce::String(3+i/12);}
 struct VideoState {
     juce::CriticalSection lock;
     juce::File file;
-    std::array<std::vector<double>,12> markers;
+    std::array<std::vector<double>,MaxNotes> markers;
+    int octaveCount=1;
     double duration=0.0, playhead=0.0;
     std::deque<int> pendingTriggers;
     std::function<void()> dispatchPlayback;
@@ -99,8 +102,9 @@ private:
             const juce::ScopedLock sl(state->lock);
             if(m.isNoteOn()) {
                 const int midiNote=m.getNoteNumber();
-                const int p=midiNote%12;
-                auto& list=state->markers[(size_t)p];
+                const int clipIndex=midiNote-48; // MIDI Do3 is note 48
+                if(clipIndex<0 || clipIndex>=state->octaveCount*PitchCount) { if(output) output->sendMessageNow(m); return; }
+                auto& list=state->markers[(size_t)clipIndex];
                 if(!list.empty()) {
                     double chosen=list.front(), best=std::abs(chosen-state->playhead);
                     for(double t:list){double d=std::abs(t-state->playhead);if(d<best){best=d;chosen=t;}}
@@ -109,7 +113,7 @@ private:
                     // pause the video. Short drum notes must not cut a running clip.
                     // Keep the MIDI event sequence. The video output switches clips
                     // without seeking or starting a decoder on the MIDI callback thread.
-                    state->pendingTriggers.push_back(p);
+                    state->pendingTriggers.push_back(clipIndex);
                     while (state->pendingTriggers.size() > 128)
                         state->pendingTriggers.pop_front();
                     dispatch=true;
@@ -296,7 +300,7 @@ struct PreparedClip
     std::vector<juce::Image> frames;
     double sourceStart = 0.0;
 };
-using PreparedClipArray = std::array<PreparedClip, 12>;
+using PreparedClipArray = std::array<PreparedClip, MaxNotes>;
 
 class ClipFramePlayer final : public juce::Component, private juce::Timer
 {
@@ -498,7 +502,7 @@ public:
                    std::function<void(int, PreparedClip, juce::String, bool)> finished)
         : ThreadPoolJob("Preload selected MIDI clip"),
           source(std::move(sourceFile)),
-          noteIndex(juce::jlimit(0, 11, note)),
+          noteIndex(juce::jlimit(0, MaxNotes-1, note)),
           markerStart(juce::jmax(0.0, startSeconds)),
           clipDuration(juce::jlimit(1.0, 8.0, secondsPerClip)),
           feedback(std::move(feedbackState)),
@@ -511,7 +515,7 @@ public:
         PreparedClip prepared;
         juce::String message;
         bool success = false;
-        const auto noteName = juce::String(notes[(size_t) noteIndex]);
+        const auto noteName = noteLabel(noteIndex);
         const int expectedFrames = juce::jmax(1, (int) std::round(clipDuration * FramesPerSecond));
 
         auto setFeedback = [this](double value, const juce::String& text)
@@ -538,7 +542,7 @@ public:
                                  .getChildFile("ClipCache");
             cacheRoot.createDirectory();
 
-            juce::String cacheKey = "manual_v3_24fps_854x480_"
+            juce::String cacheKey = "manual_v4_24fps_854x480_"
                                   + juce::String::toHexString(source.getFullPathName().hashCode64())
                                   + "_" + juce::String::toHexString(source.getSize())
                                   + "_" + juce::String(source.getLastModificationTime().toMilliseconds())
@@ -920,11 +924,12 @@ public:
         settings=std::make_unique<juce::PropertiesFile>(o);
         auto path=settings->getValue("video");
         clipDuration = juce::jlimit(1.0, 8.0, settings->getDoubleValue("clipDuration", 2.0));
-        for(int i=0;i<12;++i){auto key="markers"+juce::String(i);state->markers[(size_t)i]=parseMarkers(settings->getValue(key));}
+        for(int i=0;i<MaxNotes;++i){auto key="markers"+juce::String(i);state->markers[(size_t)i]=parseMarkers(settings->getValue(key));}
+        state->octaveCount=juce::jlimit(1,MaxOctaves,settings->getIntValue("octaveCount",1));
         addAndMakeVisible(timeline);videoStatus.setColour(juce::Label::textColourId,juce::Colour(0xff39ff14));videoStatus.setText("Aucune vidéo chargée",juce::dontSendNotification);
         setLookAndFeel(&readableLookAndFeel);
         addAndMakeVisible(newProject);addAndMakeVisible(openProject);addAndMakeVisible(saveProject);addAndMakeVisible(saveAsProject);
-        addAndMakeVisible(openVideo);addAndMakeVisible(play);addAndMakeVisible(addMarker);addAndMakeVisible(eraseMarker);addAndMakeVisible(noteChoice);addAndMakeVisible(clipDurationChoice);addAndMakeVisible(preloadClipButton);addAndMakeVisible(preloadProgressBar);addAndMakeVisible(preloadStatusLabel);addAndMakeVisible(videoStatus);
+        addAndMakeVisible(openVideo);addAndMakeVisible(play);addAndMakeVisible(addMarker);addAndMakeVisible(eraseMarker);addAndMakeVisible(noteChoice);addAndMakeVisible(octaveChoice);addAndMakeVisible(clipDurationChoice);addAndMakeVisible(preloadClipButton);addAndMakeVisible(preloadProgressBar);addAndMakeVisible(preloadStatusLabel);addAndMakeVisible(videoStatus);
         newProject.setButtonText("Nouveau projet");newProject.onClick=[this]{newProjectAction();};
         openProject.setButtonText("Ouvrir projet");openProject.onClick=[this]{chooseProjectToOpen();};
         saveProject.setButtonText("Enregistrer");saveProject.onClick=[this]{saveProjectAction();};
@@ -935,7 +940,7 @@ public:
             b->setColour(juce::TextButton::textColourOffId,juce::Colour(0xfff4fff2));
             b->setColour(juce::TextButton::textColourOnId,juce::Colour(0xff39ff14));
         }
-        for(auto* box:{&noteChoice,&clipDurationChoice,&inputBox,&outputBox}) {
+        for(auto* box:{&noteChoice,&clipDurationChoice,&inputBox,&outputBox,&octaveChoice}) {
             box->setColour(juce::ComboBox::backgroundColourId,juce::Colour(0xff101610));
             box->setColour(juce::ComboBox::textColourId,juce::Colour(0xfff4fff2));
             box->setColour(juce::ComboBox::outlineColourId,juce::Colour(0xff39ff14).withAlpha(0.8f));
@@ -947,8 +952,11 @@ public:
         play.setButtonText("Lire / Pause");play.onClick=[this]{ensureOutputWindow();if(outputWindow->isVideoPlaying()){outputWindow->pauseVideo();videoStatus.setText("Lecture en pause",juce::dontSendNotification);}else{outputWindow->setVisible(true);outputWindow->toFront(true);auto result=outputWindow->playVideo();videoStatus.setText(result,juce::dontSendNotification);}};
         addMarker.setButtonText("Ajouter un repère à la position");addMarker.onClick=[this]{addCurrentMarker();};
         eraseMarker.setButtonText("Gomme désactivée");eraseMarker.setClickingTogglesState(true);eraseMarker.onClick=[this]{bool on=eraseMarker.getToggleState();eraseMarker.setButtonText(on?"Gomme activée : cliquer un repère":"Gomme désactivée");timeline.setEraseMode(on);};
-        for(int i=0;i<12;++i)noteChoice.addItem(notes[(size_t)i],i+1);
+        for(int i=0;i<MaxNotes;++i)noteChoice.addItem(noteLabel(i),i+1);
         noteChoice.setSelectedId(1);
+        octaveChoice.addItem("1 octave",1);octaveChoice.addItem("2 octaves",2);octaveChoice.addItem("3 octaves",3);octaveChoice.addItem("4 octaves",4);
+        octaveChoice.setSelectedId(state->octaveCount);
+        octaveChoice.onChange=[this]{changeOctaveCount(octaveChoice.getSelectedId());};
         for(int seconds=1;seconds<=8;++seconds)
             clipDurationChoice.addItem("Clip " + juce::String(seconds) + " s", seconds);
         clipDurationChoice.setSelectedId((int) clipDuration, juce::dontSendNotification);
@@ -1001,7 +1009,7 @@ public:
         g.drawText("MIDI VIDEO PLAYER",24,12,getWidth()-48,30,juce::Justification::centredLeft);
         g.setColour(juce::Colour(0xfff4fff2));
         g.setFont(ReadableLookAndFeel::uiFont(13.0f));
-        g.drawText("Place les marqueurs sur les 12 pistes, puis déclenche-les avec ton clavier MIDI.",24,42,getWidth()-48,22,juce::Justification::centredLeft);
+        g.drawText("Départ Do3 | Choisis 1 à 4 octaves, puis déclenche les marqueurs avec ton clavier MIDI.",24,42,getWidth()-48,22,juce::Justification::centredLeft);
     }
     void setWaveformData(std::vector<float> p) { timeline.setWaveform(std::move(p)); }
     void resized() override {
@@ -1016,7 +1024,7 @@ public:
         openVideo.setBounds(controls.removeFromTop(36));controls.removeFromTop(8);play.setBounds(controls.removeFromTop(34));controls.removeFromTop(8);
         inputLabel.setBounds(controls.removeFromTop(20));inputBox.setBounds(controls.removeFromTop(28));controls.removeFromTop(5);
         outputLabel.setBounds(controls.removeFromTop(20));outputBox.setBounds(controls.removeFromTop(28));refresh.setBounds(controls.removeFromTop(30));
-        a.removeFromTop(8);auto timelineHead=a.removeFromTop(32);addMarker.setBounds(timelineHead.removeFromLeft(220));timelineHead.removeFromLeft(8);eraseMarker.setBounds(timelineHead.removeFromLeft(160));timelineHead.removeFromLeft(8);noteChoice.setBounds(timelineHead.removeFromLeft(95));timelineHead.removeFromLeft(8);clipDurationChoice.setBounds(timelineHead.removeFromLeft(95));timelineHead.removeFromLeft(8);preloadClipButton.setBounds(timelineHead.removeFromLeft(205));
+        a.removeFromTop(8);auto timelineHead=a.removeFromTop(32);addMarker.setBounds(timelineHead.removeFromLeft(220));timelineHead.removeFromLeft(8);eraseMarker.setBounds(timelineHead.removeFromLeft(160));timelineHead.removeFromLeft(8);noteChoice.setBounds(timelineHead.removeFromLeft(90));timelineHead.removeFromLeft(6);octaveChoice.setBounds(timelineHead.removeFromLeft(90));timelineHead.removeFromLeft(6);clipDurationChoice.setBounds(timelineHead.removeFromLeft(95));timelineHead.removeFromLeft(8);preloadClipButton.setBounds(timelineHead.removeFromLeft(205));
         a.removeFromTop(5);auto preloadRow=a.removeFromTop(24);preloadProgressBar.setBounds(preloadRow.removeFromLeft(250));preloadRow.removeFromLeft(10);preloadStatusLabel.setBounds(preloadRow);
         timeline.setBounds(a.removeFromTop(280));a.removeFromTop(8);
         outputButton.setBounds(a.removeFromTop(38).withWidth(250));
@@ -1115,7 +1123,7 @@ private:
     void updatePreloadSelectionText()
     {
         const int note = noteChoice.getSelectedId() - 1;
-        if (note < 0 || note >= 12 || preloadIsRunning())
+        if (note < 0 || note >= state->octaveCount*PitchCount || preloadIsRunning())
             return;
         double marker = -1.0;
         {
@@ -1124,7 +1132,7 @@ private:
                 marker = state->markers[(size_t) note].front();
         }
         if (marker < 0.0)
-            setPreloadMessage("Note " + juce::String(notes[(size_t) note])
+            setPreloadMessage("Note " + noteLabel(note)
                               + " : aucun marqueur. Place-le avant de précharger.");
         else
             setPreloadMessage("Note " + juce::String(notes[(size_t) note])
@@ -1136,7 +1144,7 @@ private:
     void startSelectedClipPreload()
     {
         const int note = noteChoice.getSelectedId() - 1;
-        if (note < 0 || note >= 12)
+        if (note < 0 || note >= state->octaveCount*PitchCount)
             return;
 
         juce::File source;
@@ -1218,8 +1226,9 @@ private:
         obj->setProperty("midiInput",settings->getValue("input"));
         obj->setProperty("midiOutput",settings->getValue("output"));
         juce::Array<juce::var> all;
-        for(int i=0;i<12;++i) all.add(markerString(state->markers[(size_t)i]));
+        for(int i=0;i<MaxNotes;++i) all.add(markerString(state->markers[(size_t)i]));
         obj->setProperty("markers",all);
+        obj->setProperty("octaveCount",state->octaveCount);
         return root;
     }
     bool writeProjectFile(const juce::File& file){
@@ -1291,7 +1300,7 @@ private:
     void addCurrentMarker()
     {
         int p=noteChoice.getSelectedId()-1;
-        if(p<0||p>=12)return;
+        if(p<0||p>=state->octaveCount*PitchCount)return;
         double t=outputWindow?outputWindow->videoPosition():0.0;
         {
             const juce::ScopedLock sl(state->lock);
@@ -1308,19 +1317,19 @@ private:
     {
         {
             const juce::ScopedLock sl(state->lock);
-            for(int i=0;i<12;++i)
+            for(int i=0;i<MaxNotes;++i)
                 settings->setValue("markers"+juce::String(i),markerString(state->markers[(size_t)i]));
         }
         settings->saveIfNeeded();
         markProjectDirty();
 
-        if(changedNote >= 0 && changedNote < 12)
+        if(changedNote >= 0 && changedNote < MaxNotes)
         {
             if(outputWindow)
                 outputWindow->clearPreparedClip(changedNote);
             // Also invalidate a just-finished job whose UI callback may still be queued.
             if(preloadNoteIndex == changedNote)
-                cancelPreload("Marqueur " + juce::String(notes[(size_t)changedNote])
+                cancelPreload("Marqueur " + noteLabel(changedNote)
                               + " modifié. Préchargement annulé.");
             else if(!preloadIsRunning())
                 setPreloadMessage("Repère " + juce::String(notes[(size_t)changedNote])
@@ -1343,7 +1352,7 @@ private:
     ReadableLookAndFeel readableLookAndFeel;
     juce::TextButton newProject,openProject,saveProject,saveAsProject;
     juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
-    juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton,preloadClipButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
+    juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton,preloadClipButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
 };
 
 class MainWindow final : public juce::DocumentWindow {
