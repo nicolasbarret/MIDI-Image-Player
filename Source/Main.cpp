@@ -1370,7 +1370,7 @@ private:
             }), true);
     }
 
-    void ensureOutputWindow(){if(!outputWindow)outputWindow=std::make_unique<OutputWindow>(state);}
+    void ensureOutputWindow(){if(!outputWindow){outputWindow=std::make_unique<OutputWindow>(state);outputWindow->setPreviewDuration(clipDuration);}}
     juce::File recoveryProjectFile() const {
         auto dir=juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("MIDI Video Player");
         dir.createDirectory();return dir.getChildFile("Recovery.mvproj");
