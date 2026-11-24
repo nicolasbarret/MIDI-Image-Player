@@ -134,13 +134,13 @@ public:
     std::function<void(int)> changed;
     std::function<void(double)> seeked;
     void setDuration(double d){duration=juce::jmax(0.01,d);viewStart=juce::jlimit(0.0,juce::jmax(0.0,d-visibleDuration()),viewStart);repaint();}
-    int requiredHeight() const { int n=1; { const juce::ScopedLock sl(state->lock); n=state->octaveCount*PitchCount; } return 25+n*16+60; }
+    int requiredHeight() const { int n=1; { const juce::ScopedLock sl(state->lock); n=state->octaveCount*PitchCount; } return 25+n*22+60; }
     void refreshHeight(){setSize(getWidth(),requiredHeight());repaint();}
     void setWaveform(std::vector<float> peaks){waveform=std::move(peaks);repaint();}
     void setEraseMode(bool enabled){eraseMode=enabled;setMouseCursor(enabled?juce::MouseCursor::CrosshairCursor:juce::MouseCursor::PointingHandCursor);repaint();}
     void paint(juce::Graphics& g) override {
         g.fillAll(juce::Colour(0xff050705));
-        auto r=getLocalBounds().toFloat(); float left=48.0f, right=12.0f, top=25.0f;
+        auto r=getLocalBounds().toFloat(); float left=78.0f, right=12.0f, top=25.0f;
         g.setColour(juce::Colour(0xffb8ffad)); g.setFont(ReadableLookAndFeel::uiFont(12.0f));
         g.drawText("Zoom x"+juce::String(zoom,1)+"   |   Molette : zoom   |   Maj + molette : déplacement",48,2,(int)r.getWidth()-60,19,juce::Justification::centredLeft);
         const float waveH=54.0f;
@@ -148,13 +148,13 @@ public:
         int activeNotes=1;
         { const juce::ScopedLock sl(state->lock); activeNotes=state->octaveCount*PitchCount; }
         float trackH=trackArea/(float)juce::jmax(1,activeNotes);
-        g.setFont(ReadableLookAndFeel::uiFont(12.0f));
+        g.setFont(ReadableLookAndFeel::uiFont(13.0f,juce::Font::bold));
         for(int i=0;i<activeNotes;++i){
             float y=top+i*trackH;
             g.setColour(i%2?juce::Colour(0xff101810):juce::Colour(0xff0b100b));
             g.fillRect(left,y,r.getWidth()-left-right,trackH-1.0f);
             g.setColour(juce::Colour(0xffd8ffd1));
-            g.drawText(noteLabel(i),2,(int)y,42,(int)trackH,juce::Justification::centredLeft);
+            g.drawText(noteLabel(i),4,(int)y,68,(int)trackH,juce::Justification::centredLeft);
             const juce::ScopedLock sl(state->lock);
             for(double t:state->markers[(size_t)i]){
                 float x=timeToX(t,left,r.getWidth()-left-right);
@@ -189,7 +189,7 @@ public:
         g.drawLine(px,top,px,waveY+waveH-2.0f,1.3f);
     }
     void mouseDown(const juce::MouseEvent& e) override {
-        auto r=getLocalBounds().toFloat(); float left=48.0f,right=12.0f,top=25.0f;
+        auto r=getLocalBounds().toFloat(); float left=78.0f,right=12.0f,top=25.0f;
         const float waveH=54.0f;
         const float trackArea=r.getHeight()-top-waveH-5.0f;
         int activeNotes=1; { const juce::ScopedLock sl(state->lock); activeNotes=state->octaveCount*PitchCount; }
@@ -203,7 +203,7 @@ public:
             return;
         }
         int row=juce::jlimit(0,activeNotes-1,(int)((e.position.y-top)/th));
-        dragRow=row; dragIndex=-1; double best=visibleDuration()*8.0/juce::jmax(1.0f,r.getWidth()-60.0f);
+        dragRow=row; dragIndex=-1; double best=visibleDuration()*8.0/juce::jmax(1.0f,r.getWidth()-90.0f);
         {const juce::ScopedLock sl(state->lock);auto& v=state->markers[(size_t)row];
          for(size_t i=0;i<v.size();++i){double dx=std::abs(v[i]-clicked);if(dx<best){best=dx;dragIndex=(int)i;}}}
         if(eraseMode){
@@ -222,10 +222,10 @@ public:
     }
     void mouseDrag(const juce::MouseEvent& e) override {
         if(!dragging)return;
-        auto r=getLocalBounds().toFloat();double t=xToTime(e.position.x,48.0f,r.getWidth()-60.0f);moveMarker(t);
+        auto r=getLocalBounds().toFloat();double t=xToTime(e.position.x,78.0f,r.getWidth()-90.0f);moveMarker(t);
     }
     void mouseWheelMove(const juce::MouseEvent& e,const juce::MouseWheelDetails& wheel) override {
-        const float left=48.0f, right=12.0f;
+        const float left=78.0f, right=12.0f;
         const double window=visibleDuration();
         if(e.mods.isShiftDown()) {
             viewStart=juce::jlimit(0.0,juce::jmax(0.0,duration-window),viewStart-wheel.deltaY*window*0.30);
@@ -979,7 +979,25 @@ private:
     void timerCallback() override
     {
         syncFile();
+        if(previewEndMs!=0 && juce::Time::getMillisecondCounter()>=previewEndMs) {
+            sourceVideo.pause();
+            previewEndMs=0;
+        }
     }
+    void previewMarker(double seconds) {
+        syncFile();
+        if(!loadedFile.existsAsFile() || !sourceVideo.isAvailable()) return;
+        clipPlayer.stop();
+        audioClipSource.stop();
+        clipPlayer.setVisible(false);
+        sourceVideo.setVisible(true);
+        sourceVideo.setOutputVisible(true);
+        clipMode=false;
+        sourceVideo.setPlayPosition(juce::jmax(0.0,seconds));
+        sourceVideo.play();
+        previewEndMs=juce::Time::getMillisecondCounter()+(juce::uint32)juce::roundToInt(clipPreviewDuration*1000.0);
+    }
+    void setPreviewDuration(double seconds){clipPreviewDuration=juce::jlimit(1.0,8.0,seconds);}
 
     void handleAsyncUpdate() override
     {
@@ -992,8 +1010,17 @@ private:
         // Route MIDI hits through triggerClip(), not directly to ClipFramePlayer.
         // triggerClip() performs the essential VLC -> prepared-frame display switch.
         // The newest MIDI hit wins within one UI dispatch.
-        if (!triggers.empty())
-            triggerClip(triggers.back());
+        if (!triggers.empty()) {
+            const int noteIndex=triggers.back();
+            if(!triggerClip(noteIndex)) {
+                double marker=-1.0;
+                { const juce::ScopedLock sl(state->lock);
+                  if(noteIndex>=0 && noteIndex<(int)state->markers.size() && !state->markers[(size_t)noteIndex].empty())
+                      marker=state->markers[(size_t)noteIndex].front();
+                }
+                if(marker>=0.0) previewMarker(marker);
+            }
+        }
     }
 
     std::shared_ptr<VideoState> state;
@@ -1002,6 +1029,8 @@ private:
     juce::File loadedFile;
     bool loadSucceeded = false;
     bool clipMode = false;
+    juce::uint32 previewEndMs=0;
+    double clipPreviewDuration=2.0;
     ClipAudioSource audioClipSource;
     juce::AudioDeviceManager audioDeviceManager;
     juce::AudioSourcePlayer audioSourcePlayer;
@@ -1023,6 +1052,7 @@ public:
     double videoDuration() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->duration(); return 0.0; }
     juce::String videoDiagnostic() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->diagnostic(); return "Sortie OBS non ouverte"; }
     void configureAudio() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->configureAudio(); }
+    void setPreviewDuration(double seconds){if(auto* v=dynamic_cast<VideoOutputView*>(getContentComponent()))v->setPreviewDuration(seconds);}
     void setPreparedClip(int noteIndex, PreparedClip clip, double seconds) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setPreparedClip(noteIndex, std::move(clip), seconds); }
     void clearPreparedClip(int noteIndex) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->clearPreparedClip(noteIndex); }
     void clearPreparedClips() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->clearPreparedClips(); }
@@ -1073,6 +1103,7 @@ public:
         clipDurationChoice.setSelectedId((int) clipDuration, juce::dontSendNotification);
         clipDurationChoice.onChange=[this]{
             clipDuration = (double) clipDurationChoice.getSelectedId();
+            if(outputWindow) outputWindow->setPreviewDuration(clipDuration);
             settings->setValue("clipDuration", clipDuration);
             settings->saveIfNeeded();
             cancelPreload("Durée modifiée. Précharge à nouveau les clips nécessaires.");
@@ -1121,7 +1152,7 @@ public:
         g.drawText("MIDI VIDEO PLAYER",24,12,getWidth()-48,30,juce::Justification::centredLeft);
         g.setColour(juce::Colour(0xfff4fff2));
         g.setFont(ReadableLookAndFeel::uiFont(13.0f));
-        g.drawText("Départ Do3 | Choisis 1 à 4 octaves, puis déclenche les marqueurs avec ton clavier MIDI.",24,42,getWidth()-48,22,juce::Justification::centredLeft);
+        g.drawText("Départ Do3 | Les notes sont affichées à gauche de chaque piste. Teste un marqueur avant de le précharger.",24,42,getWidth()-48,22,juce::Justification::centredLeft);
     }
     void setWaveformData(std::vector<float> p) { timeline.setWaveform(std::move(p)); }
     void changeOctaveCount(int count) {
@@ -1147,13 +1178,13 @@ public:
         saveProject.setBounds(projectBar.removeFromLeft(115));projectBar.removeFromLeft(7);
         saveAsProject.setBounds(projectBar.removeFromLeft(145));
         a.removeFromTop(8);
-        auto top=a.removeFromTop(220);auto left=top.removeFromLeft(250);videoStatus.setBounds(left.removeFromTop(44));auto controls=top.reduced(12,0);
+        auto top=a.removeFromTop(260);auto left=top.removeFromLeft(250);videoStatus.setBounds(left.removeFromTop(44));auto controls=top.reduced(12,0);
         openVideo.setBounds(controls.removeFromTop(36));controls.removeFromTop(8);play.setBounds(controls.removeFromTop(34));controls.removeFromTop(8);
         inputLabel.setBounds(controls.removeFromTop(20));inputBox.setBounds(controls.removeFromTop(28));controls.removeFromTop(5);
-        outputLabel.setBounds(controls.removeFromTop(20));outputBox.setBounds(controls.removeFromTop(28));refresh.setBounds(controls.removeFromTop(30));audioOutputButton.setBounds(controls.removeFromTop(32));
+        outputLabel.setBounds(controls.removeFromTop(20));outputBox.setBounds(controls.removeFromTop(28));refresh.setBounds(controls.removeFromTop(30));audioOutputButton.setBounds(controls.removeFromTop(44));
         a.removeFromTop(8);auto timelineHead=a.removeFromTop(32);addMarker.setBounds(timelineHead.removeFromLeft(220));timelineHead.removeFromLeft(8);eraseMarker.setBounds(timelineHead.removeFromLeft(160));timelineHead.removeFromLeft(8);noteChoice.setBounds(timelineHead.removeFromLeft(90));timelineHead.removeFromLeft(6);octaveChoice.setBounds(timelineHead.removeFromLeft(90));timelineHead.removeFromLeft(6);clipDurationChoice.setBounds(timelineHead.removeFromLeft(95));timelineHead.removeFromLeft(8);preloadClipButton.setBounds(timelineHead.removeFromLeft(205));
         a.removeFromTop(5);auto preloadRow=a.removeFromTop(24);preloadProgressBar.setBounds(preloadRow.removeFromLeft(250));preloadRow.removeFromLeft(10);preloadStatusLabel.setBounds(preloadRow);
-        timelineViewport.setBounds(a.removeFromTop(280));a.removeFromTop(8);
+        timelineViewport.setBounds(a.removeFromTop(280));timeline.setSize(timelineViewport.getWidth(),timeline.requiredHeight());a.removeFromTop(8);
         outputButton.setBounds(a.removeFromTop(38).withWidth(250));
     }
 private:
