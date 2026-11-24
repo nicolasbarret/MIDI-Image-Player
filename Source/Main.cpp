@@ -891,7 +891,6 @@ public:
         return sourceVideo.playbackDiagnostic();
     }
 
-    void configureAudio(){if(auto* v=dynamic_cast<VideoOutputView*>(getContentComponent()))v->configureAudio();}
     void setPreparedClip(int noteIndex, PreparedClip clip, double clipSeconds)
     {
         clipPlayer.setClip(noteIndex, std::move(clip), clipSeconds);
@@ -1008,6 +1007,7 @@ public:
     double videoPosition() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->position(); return 0.0; }
     double videoDuration() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->duration(); return 0.0; }
     juce::String videoDiagnostic() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->diagnostic(); return "Sortie OBS non ouverte"; }
+    void configureAudio() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->configureAudio(); }
     void setPreparedClip(int noteIndex, PreparedClip clip, double seconds) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setPreparedClip(noteIndex, std::move(clip), seconds); }
     void clearPreparedClip(int noteIndex) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->clearPreparedClip(noteIndex); }
     void clearPreparedClips() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->clearPreparedClips(); }
@@ -1078,7 +1078,7 @@ public:
         refresh.setButtonText("Actualiser");refresh.onClick=[this]{refreshMidi();};inputBox.onChange=[this]{selectInput();};outputBox.onChange=[this]{selectOutput();};
         outputButton.setButtonText("Ouvrir la sortie vidéo OBS");outputButton.onClick=[this]{ensureOutputWindow();outputWindow->setVisible(true);outputWindow->toFront(true);};
         audioOutputButton.setButtonText("Configurer la sortie audio");audioOutputButton.onClick=[this]{ensureOutputWindow();outputWindow->configureAudio();};
-        refreshMidi();setSize(1120,850);
+        refreshMidi();setSize(1120,900);
         auto recovery=recoveryProjectFile();
         bool restoredProject = false;
         if(recovery.existsAsFile() && recovery.getSize()>0) {
@@ -1325,7 +1325,7 @@ private:
     juce::var makeProjectData(){
         auto* obj=new juce::DynamicObject();juce::var root(obj);
         const juce::ScopedLock sl(state->lock);
-        obj->setProperty("formatVersion",2);
+        obj->setProperty("formatVersion",3);
         obj->setProperty("video",state->file.getFullPathName());
         obj->setProperty("clipDuration", clipDuration);
         obj->setProperty("midiInput",settings->getValue("input"));
@@ -1333,7 +1333,6 @@ private:
         juce::Array<juce::var> all;
         for(int i=0;i<MaxNotes;++i) all.add(markerString(state->markers[(size_t)i]));
         obj->setProperty("markers",all);
-        obj->setProperty("octaveCount",state->octaveCount);
         obj->setProperty("octaveCount",state->octaveCount);
         return root;
     }
@@ -1393,6 +1392,7 @@ private:
             if(outputWindow) outputWindow->clearPreparedClips();
             videoStatus.setText("Vidéo introuvable : "+videoPath,juce::dontSendNotification);
         }
+        timeline.refreshHeight(); timelineViewport.setViewPosition(0,0);
         timeline.setDuration(state->duration>0.0?state->duration:60.0);timeline.repaint();refreshMidi();
         if(videoPath.isEmpty()) videoStatus.setText("Projet chargé : aucune vidéo associée",juce::dontSendNotification);
         else if(!videoFile.existsAsFile()) videoStatus.setText("Projet chargé, vidéo introuvable : "+videoPath,juce::dontSendNotification);
@@ -1466,7 +1466,7 @@ private:
 
 class MainWindow final : public juce::DocumentWindow {
 public:
-    MainWindow():DocumentWindow("MIDI Video Player",juce::Colour(0xff050705),allButtons){setUsingNativeTitleBar(true);setContentOwned(new MainView(),true);setResizable(true,true);centreWithSize(1120,850);}
+    MainWindow():DocumentWindow("MIDI Video Player",juce::Colour(0xff050705),allButtons){setUsingNativeTitleBar(true);setContentOwned(new MainView(),true);setResizable(true,true);centreWithSize(1120,900);}
     void closeButtonPressed() override {juce::JUCEApplication::getInstance()->systemRequestedQuit();}
 };
 class App final : public juce::JUCEApplication {
