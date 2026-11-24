@@ -316,6 +316,8 @@ public:
     void pause(){const juce::ScopedLock sl(lock);paused=true;}
     void resume(){const juce::ScopedLock sl(lock);paused=false;}
     void stop(){const juce::ScopedLock sl(lock);clip.reset();position=0.0;paused=false;}
+    void setOutputGain(float value){const juce::ScopedLock sl(lock);outputGain=juce::jlimit(0.0f,1.0f,value);}
+    void setMuted(bool value){const juce::ScopedLock sl(lock);muted=value;}
     void getNextAudioBlock(const juce::AudioSourceChannelInfo& info) override {
         info.clearActiveBufferRegion();
         const juce::ScopedLock sl(lock);
@@ -329,7 +331,7 @@ public:
             for(int ch=0;ch<outChannels;++ch) {
                 const int src=juce::jmin(ch,sourceChannels-1);
                 const float a=clip->getSample(src,index), b=clip->getSample(src,next);
-                info.buffer->addSample(ch,info.startSample+i,a+(b-a)*frac);
+                info.buffer->addSample(ch,info.startSample+i,(a+(b-a)*frac)*(muted?0.0f:outputGain));
             }
             position += sourceRate/outputRate;
         }
@@ -339,6 +341,8 @@ private:
     std::shared_ptr<juce::AudioBuffer<float>> clip;
     double sourceRate=44100.0, outputRate=44100.0, position=0.0;
     bool paused=false;
+    float outputGain=1.0f;
+    bool muted=false;
 };
 
 class ClipFramePlayer final : public juce::Component, private juce::Timer
@@ -939,6 +943,17 @@ public:
         clipPlayer.setClips({}, 3.0);
         audioClipSource.stop();
     }
+    void setOutputVolume(float value)
+    {
+        const int volume=juce::jlimit(0,100,juce::roundToInt(value*100.0f));
+        sourceVideo.setVolume(volume);
+        audioClipSource.setOutputGain(value);
+    }
+    void setOutputMuted(bool muted)
+    {
+        sourceVideo.setMuted(muted);
+        audioClipSource.setMuted(muted);
+    }
     void setPreviewDuration(double seconds) { clipPreviewDuration = juce::jlimit(1.0, 8.0, seconds); }
 
     void configureAudio() {
@@ -1052,6 +1067,8 @@ public:
     double videoDuration() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->duration(); return 0.0; }
     juce::String videoDiagnostic() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->diagnostic(); return "Sortie OBS non ouverte"; }
     void configureAudio() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->configureAudio(); }
+    void setOutputVolume(float value) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setOutputVolume(value); }
+    void setOutputMuted(bool muted) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setOutputMuted(muted); }
     void setPreviewDuration(double seconds){if(auto* v=dynamic_cast<VideoOutputView*>(getContentComponent()))v->setPreviewDuration(seconds);}
     void setPreparedClip(int noteIndex, PreparedClip clip, double seconds) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setPreparedClip(noteIndex, std::move(clip), seconds); }
     void clearPreparedClip(int noteIndex) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->clearPreparedClip(noteIndex); }
@@ -1089,6 +1106,18 @@ public:
         }
         addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
         addAndMakeVisible(outputButton);addAndMakeVisible(audioOutputButton);
+        addAndMakeVisible(localVolumeLabel);addAndMakeVisible(localVolumeSlider);addAndMakeVisible(localMuteButton);
+        localVolumeLabel.setText("Volume audio",juce::dontSendNotification);
+        localVolumeLabel.setColour(juce::Label::textColourId,juce::Colour(0xfff4fff2));
+        localVolumeSlider.setRange(0.0,1.0,0.01);localVolumeSlider.setValue(1.0,juce::dontSendNotification);
+        localVolumeSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+        localVolumeSlider.setTextBoxStyle(juce::Slider::TextBoxRight,false,42,22);
+        localVolumeSlider.setColour(juce::Slider::trackColourId,juce::Colour(0xff39ff14));
+        localVolumeSlider.setColour(juce::Slider::thumbColourId,juce::Colour(0xfff4fff2));
+        localVolumeSlider.setColour(juce::Slider::textBoxTextColourId,juce::Colour(0xfff4fff2));
+        localVolumeSlider.onValueChange=[this]{if(outputWindow)outputWindow->setOutputVolume((float)localVolumeSlider.getValue());};
+        localMuteButton.setButtonText("Mute audio désactivé");localMuteButton.setClickingTogglesState(true);
+        localMuteButton.onClick=[this]{const bool muted=localMuteButton.getToggleState();localMuteButton.setButtonText(muted?"Mute audio activé":"Mute audio désactivé");if(outputWindow)outputWindow->setOutputMuted(muted);};
         openVideo.setButtonText("Ouvrir une vidéo");openVideo.onClick=[this]{chooseVideo();};
         play.setButtonText("Lire / Pause");play.onClick=[this]{ensureOutputWindow();if(outputWindow->isVideoPlaying()){outputWindow->pauseVideo();videoStatus.setText("Lecture en pause",juce::dontSendNotification);}else{outputWindow->setVisible(true);outputWindow->toFront(true);auto result=outputWindow->playVideo();videoStatus.setText(result,juce::dontSendNotification);}};
         addMarker.setButtonText("Ajouter un repère à la position");addMarker.onClick=[this]{addCurrentMarker();};
@@ -1185,6 +1214,9 @@ public:
         a.removeFromTop(8);auto timelineHead=a.removeFromTop(32);addMarker.setBounds(timelineHead.removeFromLeft(220));timelineHead.removeFromLeft(8);eraseMarker.setBounds(timelineHead.removeFromLeft(160));timelineHead.removeFromLeft(8);noteChoice.setBounds(timelineHead.removeFromLeft(90));timelineHead.removeFromLeft(6);octaveChoice.setBounds(timelineHead.removeFromLeft(90));timelineHead.removeFromLeft(6);clipDurationChoice.setBounds(timelineHead.removeFromLeft(95));timelineHead.removeFromLeft(8);preloadClipButton.setBounds(timelineHead.removeFromLeft(205));
         a.removeFromTop(5);auto preloadRow=a.removeFromTop(24);preloadProgressBar.setBounds(preloadRow.removeFromLeft(250));preloadRow.removeFromLeft(10);preloadStatusLabel.setBounds(preloadRow);
         timelineViewport.setBounds(a.removeFromTop(280));timeline.setSize(timelineViewport.getWidth(),timeline.requiredHeight());a.removeFromTop(8);
+        localVolumeLabel.setBounds(controls.removeFromTop(20));
+        localVolumeSlider.setBounds(controls.removeFromTop(28));
+        localMuteButton.setBounds(controls.removeFromTop(32));
         outputButton.setBounds(a.removeFromTop(38).withWidth(250));
     }
 private:
@@ -1515,7 +1547,7 @@ private:
     ReadableLookAndFeel readableLookAndFeel;
     juce::TextButton newProject,openProject,saveProject,saveAsProject;
     juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
-    juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton,audioOutputButton,preloadClipButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
+    juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton,audioOutputButton,preloadClipButton,localMuteButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice;juce::Slider localVolumeSlider;juce::Label localVolumeLabel,inputLabel,outputLabel,videoStatus,preloadStatusLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
 };
 
 class MainWindow final : public juce::DocumentWindow {
