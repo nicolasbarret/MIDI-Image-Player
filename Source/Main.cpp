@@ -378,6 +378,113 @@ private:
     bool muted=false;
 };
 
+class TimelineAudioSource final : public juce::AudioSource
+{
+public:
+    void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override
+    {
+        const juce::ScopedLock sl(lock);
+        outputRate = juce::jmax(1.0, sampleRate);
+        scratch.setSize(2, juce::jmax(512, samplesPerBlockExpected * 2), false, false, true);
+    }
+
+    void releaseResources() override
+    {
+        const juce::ScopedLock sl(lock);
+        playing = false;
+        reader.reset();
+        position = 0.0;
+    }
+
+    bool setFile(const juce::File& file)
+    {
+        juce::AudioFormatManager formats;
+        formats.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> newReader(formats.createReaderFor(file));
+        if (!newReader || newReader->lengthInSamples <= 0)
+            return false;
+
+        const juce::ScopedLock sl(lock);
+        playing = false;
+        reader = std::move(newReader);
+        position = 0.0;
+        sourceRate = juce::jmax(1.0, reader->sampleRate);
+        return true;
+    }
+
+    void seekAndPlay(double seconds)
+    {
+        const juce::ScopedLock sl(lock);
+        if (!reader)
+            return;
+        position = juce::jlimit(0.0, (double) reader->lengthInSamples - 1.0,
+                                juce::jmax(0.0, seconds) * sourceRate);
+        playing = true;
+    }
+
+    void stop()
+    {
+        const juce::ScopedLock sl(lock);
+        playing = false;
+    }
+
+    void getNextAudioBlock(const juce::AudioSourceChannelInfo& info) override
+    {
+        info.clearActiveBufferRegion();
+        const juce::ScopedLock sl(lock);
+        if (!playing || !reader || info.numSamples <= 0)
+            return;
+
+        const double ratio = sourceRate / outputRate;
+        const int needed = juce::jmin(scratch.getNumSamples(),
+            juce::jmax(2, (int) std::ceil(info.numSamples * ratio) + 2));
+        const auto start = (juce::int64) position;
+        if (start >= reader->lengthInSamples)
+        {
+            playing = false;
+            return;
+        }
+        const int available = (int) juce::jmin((juce::int64) needed, reader->lengthInSamples - start);
+        scratch.clear();
+        if (!reader->read(&scratch, 0, available, start, true, true))
+        {
+            playing = false;
+            return;
+        }
+
+        const int sourceChannels = juce::jmax(1, (int) reader->numChannels);
+        for (int i = 0; i < info.numSamples; ++i)
+        {
+            const double sourcePosition = position - start + i * ratio;
+            const int index = (int) sourcePosition;
+            if (index >= available)
+            {
+                playing = false;
+                break;
+            }
+            const int next = juce::jmin(index + 1, available - 1);
+            const float fraction = (float) (sourcePosition - index);
+            for (int channel = 0; channel < info.buffer->getNumChannels(); ++channel)
+            {
+                const int sourceChannel = juce::jmin(channel, sourceChannels - 1);
+                const float a = scratch.getSample(sourceChannel, index);
+                const float b = scratch.getSample(sourceChannel, next);
+                info.buffer->addSample(channel, info.startSample + i, a + (b - a) * fraction);
+            }
+        }
+        position += info.numSamples * ratio;
+        if (position >= reader->lengthInSamples)
+            playing = false;
+    }
+
+private:
+    juce::CriticalSection lock;
+    std::unique_ptr<juce::AudioFormatReader> reader;
+    juce::AudioBuffer<float> scratch;
+    double position = 0.0, sourceRate = 44100.0, outputRate = 44100.0;
+    bool playing = false;
+};
+
 class ClipFramePlayer final : public juce::Component, private juce::Timer
 {
 public:
@@ -858,7 +965,7 @@ public:
         addAndMakeVisible(clipPlayer);
         audioDeviceManager.initialise(0,2,nullptr,true);
 
-        audioMixer.addInputSource(&audioClipSource, false);
+        audioMixer.addInputSource(&audioClipSource, false);\n         audioMixer.addInputSource(&timelineAudioSource, false);
          audioSourcePlayer.setSource(&audioMixer);
         audioDeviceManager.addAudioCallback(&audioSourcePlayer);
         clipPlayer.setVisible(false);
@@ -882,7 +989,7 @@ public:
         sourceVideo.unload();
          audioDeviceManager.removeAudioCallback(&audioSourcePlayer);
         audioSourcePlayer.setSource(nullptr);
-        audioMixer.removeAllInputs();
+        audioMixer.removeAllInputs();\n         timelineAudioSource.releaseResources();
 
         audioDeviceManager.closeAudioDevice();
         const juce::ScopedLock sl(state->lock);
@@ -1229,7 +1336,7 @@ public:
         preloadStatusLabel.setText("Choisis une note, place son marqueur, puis précharge manuellement.",juce::dontSendNotification);
         noteChoice.onChange=[this]{updatePreloadSelectionText();};
         timeline.changed=[this](int noteIndex){saveMarkers(noteIndex);};
-        timeline.seeked=[this](double t){if(outputWindow)outputWindow->seekVideo(t);};
+        timeline.seeked=[this](double t){if(outputWindow){outputWindow->seekVideo(t);outputWindow->previewTimelineAudio(t);}};
         inputLabel.setText("Entrée MIDI",juce::dontSendNotification);outputLabel.setText("Sortie MIDI (loopMIDI)",juce::dontSendNotification);
 
         refresh.setButtonText("Actualiser");refresh.onClick=[this]{refreshMidi();};inputBox.onChange=[this]{selectInput();};outputBox.onChange=[this]{selectOutput();};
@@ -1345,7 +1452,7 @@ private:
             {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=0.0;state->playhead=0.0;state->pendingTriggers.clear();}
             timeline.setDuration(60.0);timeline.setWaveform({});timeline.repaint();
             juce::Component::SafePointer<MainView> safe(this);
-            waveformJobs.addJob(new WaveformJob(f,[safe, source=f](std::vector<float> p, juce::File audio){if(safe){bool current=false;{const juce::ScopedLock sl(safe->state->lock);current=(safe->state->file==source);}if(current){safe->setWaveformData(std::move(p));}}}),true);
+            waveformJobs.addJob(new WaveformJob(f,[safe, source=f](std::vector<float> p, juce::File audio){if(safe){bool current=false;{const juce::ScopedLock sl(safe->state->lock);current=(safe->state->file==source);}if(current){safe->setWaveformData(std::move(p));if(audio.existsAsFile()){safe->ensureOutputWindow();if(safe->outputWindow)safe->outputWindow->setTimelineAudioFile(audio);}}}}),true);
             ensureOutputWindow();
             outputWindow->setVisible(true);outputWindow->toFront(true);
             // Start the source preview immediately so the user can position markers
