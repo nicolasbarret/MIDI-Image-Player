@@ -859,9 +859,7 @@ public:
         audioDeviceManager.initialise(0,2,nullptr,true);
 
         audioMixer.addInputSource(&audioClipSource, false);
-        audioMixer.addInputSource(&previewTransport, false);
-        previewFormatManager.registerBasicFormats();
-        audioSourcePlayer.setSource(&audioMixer);
+         audioSourcePlayer.setSource(&audioMixer);
         audioDeviceManager.addAudioCallback(&audioSourcePlayer);
         clipPlayer.setVisible(false);
 
@@ -882,10 +880,7 @@ public:
         cancelPendingUpdate();
         sourceVideo.stop();
         sourceVideo.unload();
-        previewTransport.stop();
-        previewTransport.setSource(nullptr);
-        previewReaderSource.reset();
-        audioDeviceManager.removeAudioCallback(&audioSourcePlayer);
+         audioDeviceManager.removeAudioCallback(&audioSourcePlayer);
         audioSourcePlayer.setSource(nullptr);
         audioMixer.removeAllInputs();
 
@@ -910,8 +905,7 @@ public:
 
         clipPlayer.stop();
         audioClipSource.stop();
-        previewTransport.stop();
-        clipPlayer.setVisible(false);
+         clipPlayer.setVisible(false);
         sourceVideo.setVisible(true);
         sourceVideo.setOutputVisible(true);
         audioClipSource.stop();
@@ -973,30 +967,7 @@ public:
         return sourceVideo.playbackDiagnostic();
     }
 
-    void setPreviewAudioFile(const juce::File& file)
-    {
-        previewTransport.stop();
-        previewTransport.setSource(nullptr);
-        previewReaderSource.reset();
-        if (!file.existsAsFile()) return;
-        std::unique_ptr<juce::AudioFormatReader> reader(previewFormatManager.createReaderFor(file));
-        if (!reader) return;
-        const double rate = reader->sampleRate;
-        previewReaderSource = std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
-        previewTransport.setSource(previewReaderSource.get(), 32768, nullptr, rate);
-    }
-
-    void previewAudioAt(double seconds)
-    {
-        if (!previewReaderSource) return;
-        previewTransport.stop();
-        previewTransport.setPosition(juce::jmax(0.0, seconds));
-        previewTransport.start();
-    }
-
-    void stopAudioPreview() { previewTransport.stop(); }
-
-    void setPreparedClip(int noteIndex, PreparedClip clip, double clipSeconds)
+     void setPreparedClip(int noteIndex, PreparedClip clip, double clipSeconds)
     {
         clipPlayer.setClip(noteIndex, std::move(clip), clipSeconds);
     }
@@ -1157,10 +1128,7 @@ private:
     ClipAudioSource audioClipSource;
 
     juce::MixerAudioSource audioMixer;
-    juce::AudioFormatManager previewFormatManager;
-    std::unique_ptr<juce::AudioFormatReaderSource> previewReaderSource;
-    juce::AudioTransportSource previewTransport;
-    juce::AudioDeviceManager audioDeviceManager;
+     juce::AudioDeviceManager audioDeviceManager;
     juce::AudioSourcePlayer audioSourcePlayer;
 };
 
@@ -1186,10 +1154,7 @@ public:
     void setOutputMuted(bool muted) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setOutputMuted(muted); }
 
     void setPreviewDuration(double seconds){if(auto* v=dynamic_cast<VideoOutputView*>(getContentComponent()))v->setPreviewDuration(seconds);}
-    void setPreviewAudioFile(const juce::File& file) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setPreviewAudioFile(file); }
-    void previewAudioAt(double seconds) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->previewAudioAt(seconds); }
-    void stopAudioPreview() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->stopAudioPreview(); }
-    void setPreparedClip(int noteIndex, PreparedClip clip, double seconds) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setPreparedClip(noteIndex, std::move(clip), seconds); }
+     void setPreparedClip(int noteIndex, PreparedClip clip, double seconds) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setPreparedClip(noteIndex, std::move(clip), seconds); }
     void clearPreparedClip(int noteIndex) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->clearPreparedClip(noteIndex); }
     void clearPreparedClips() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->clearPreparedClips(); }
 };
@@ -1211,7 +1176,7 @@ public:
         openProject.setButtonText("Ouvrir projet");openProject.onClick=[this]{chooseProjectToOpen();};
         saveProject.setButtonText("Enregistrer");saveProject.onClick=[this]{saveProjectAction();};
         saveAsProject.setButtonText("Enregistrer sous");saveAsProject.onClick=[this]{chooseProjectToSave();};
-        for(auto* b:{&newProject,&openProject,&saveProject,&saveAsProject,&openVideo,&play,&addMarker,&eraseMarker,&refresh,&outputButton,&audioOutputButton,&preloadClipButton,&preloadAllButton,&previewAudioButton}) {
+        for(auto* b:{&newProject,&openProject,&saveProject,&saveAsProject,&openVideo,&play,&addMarker,&eraseMarker,&refresh,&outputButton,&audioOutputButton,&preloadClipButton,&preloadAllButton}) {
             b->setColour(juce::TextButton::buttonColourId,juce::Colour(0xff101610));
             b->setColour(juce::TextButton::buttonOnColourId,juce::Colour(0xff39ff14).withAlpha(0.22f));
             b->setColour(juce::TextButton::textColourOffId,juce::Colour(0xfff4fff2));
@@ -1225,7 +1190,7 @@ public:
         }
         addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
         addAndMakeVisible(outputButton);addAndMakeVisible(audioOutputButton);
-        addAndMakeVisible(localMuteButton);addAndMakeVisible(noteReleaseButton);addAndMakeVisible(previewAudioButton);
+        addAndMakeVisible(localMuteButton);addAndMakeVisible(noteReleaseButton);
         addAndMakeVisible(audioOutputLabel);addAndMakeVisible(audioOutputChoice);addAndMakeVisible(refreshAudioButton);
         audioOutputLabel.setText("Périphérique audio de sortie",juce::dontSendNotification);
         refreshAudioButton.setButtonText("Actualiser les sorties audio");
@@ -1234,8 +1199,7 @@ public:
         state->fadeOnNoteOff=settings->getBoolValue("fadeOnNoteOff",false);
         noteReleaseButton.setButtonText(state->fadeOnNoteOff ? "Relâchement : fondu" : "Relâchement : arrêt net");
         noteReleaseButton.onClick=[this]{ {const juce::ScopedLock sl(state->lock);state->fadeOnNoteOff=!state->fadeOnNoteOff;noteReleaseButton.setButtonText(state->fadeOnNoteOff ? "Relâchement : fondu" : "Relâchement : arrêt net");settings->setValue("fadeOnNoteOff",state->fadeOnNoteOff);settings->saveIfNeeded();} };
-        previewAudioButton.setClickingTogglesState(true);previewAudioButton.setToggleState(true,juce::dontSendNotification);previewAudioButton.setButtonText("Préécoute audio : activée");previewAudioButton.onClick=[this]{const bool enabled=previewAudioButton.getToggleState();previewAudioButton.setButtonText(enabled?"Préécoute audio : activée":"Préécoute audio : coupée");if(!enabled && outputWindow)outputWindow->stopAudioPreview();};
-        localMuteButton.setButtonText("Mute audio désactivé");localMuteButton.setClickingTogglesState(true);
+         localMuteButton.setButtonText("Mute audio désactivé");localMuteButton.setClickingTogglesState(true);
         localMuteButton.onClick=[this]{const bool muted=localMuteButton.getToggleState();localMuteButton.setButtonText(muted?"Mute audio activé":"Mute audio désactivé");if(outputWindow)outputWindow->setOutputMuted(muted);};
         openVideo.setButtonText("Ouvrir une vidéo");openVideo.onClick=[this]{chooseVideo();};
         play.setButtonText("Lire / Pause");play.onClick=[this]{ensureOutputWindow();if(outputWindow->isVideoPlaying()){outputWindow->pauseVideo();videoStatus.setText("Lecture en pause",juce::dontSendNotification);}else{outputWindow->setVisible(true);outputWindow->toFront(true);auto result=outputWindow->playVideo();videoStatus.setText(result,juce::dontSendNotification);}};
@@ -1268,7 +1232,7 @@ public:
         preloadStatusLabel.setText("Choisis une note, place son marqueur, puis précharge manuellement.",juce::dontSendNotification);
         noteChoice.onChange=[this]{updatePreloadSelectionText();};
         timeline.changed=[this](int noteIndex){saveMarkers(noteIndex);};
-        timeline.seeked=[this](double t){if(outputWindow){outputWindow->seekVideo(t);if(previewAudioButton.getToggleState())outputWindow->previewAudioAt(t);else outputWindow->stopAudioPreview();}};
+        timeline.seeked=[this](double t){if(outputWindow)outputWindow->seekVideo(t);};
         inputLabel.setText("Entrée MIDI",juce::dontSendNotification);outputLabel.setText("Sortie MIDI (loopMIDI)",juce::dontSendNotification);
 
         refresh.setButtonText("Actualiser");refresh.onClick=[this]{refreshMidi();};inputBox.onChange=[this]{selectInput();};outputBox.onChange=[this]{selectOutput();};
@@ -1329,7 +1293,7 @@ public:
         saveProject.setBounds(projectBar.removeFromLeft(115));projectBar.removeFromLeft(7);
         saveAsProject.setBounds(projectBar.removeFromLeft(145));
         a.removeFromTop(8);
-        auto top=a.removeFromTop(260);auto left=top.removeFromLeft(250);videoStatus.setBounds(left.removeFromTop(44));localMuteButton.setBounds(left.removeFromTop(32));noteReleaseButton.setBounds(left.removeFromTop(32));previewAudioButton.setBounds(left.removeFromTop(32));left.removeFromTop(5);audioOutputLabel.setBounds(left.removeFromTop(20));audioOutputChoice.setBounds(left.removeFromTop(28));left.removeFromTop(4);refreshAudioButton.setBounds(left.removeFromTop(28));auto controls=top.reduced(12,0);
+        auto top=a.removeFromTop(260);auto left=top.removeFromLeft(250);videoStatus.setBounds(left.removeFromTop(44));localMuteButton.setBounds(left.removeFromTop(32));noteReleaseButton.setBounds(left.removeFromTop(32));left.removeFromTop(5);audioOutputLabel.setBounds(left.removeFromTop(20));audioOutputChoice.setBounds(left.removeFromTop(28));left.removeFromTop(4);refreshAudioButton.setBounds(left.removeFromTop(28));auto controls=top.reduced(12,0);
         openVideo.setBounds(controls.removeFromTop(36));controls.removeFromTop(8);play.setBounds(controls.removeFromTop(34));controls.removeFromTop(8);
         inputLabel.setBounds(controls.removeFromTop(20));inputBox.setBounds(controls.removeFromTop(28));controls.removeFromTop(5);
         outputLabel.setBounds(controls.removeFromTop(20));outputBox.setBounds(controls.removeFromTop(28));refresh.setBounds(controls.removeFromTop(30));audioOutputButton.setBounds(controls.removeFromTop(44));
@@ -1384,7 +1348,7 @@ private:
             {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=0.0;state->playhead=0.0;state->pendingTriggers.clear();}
             timeline.setDuration(60.0);timeline.setWaveform({});timeline.repaint();
             juce::Component::SafePointer<MainView> safe(this);
-            waveformJobs.addJob(new WaveformJob(f,[safe, source=f](std::vector<float> p, juce::File audio){if(safe){bool current=false;{const juce::ScopedLock sl(safe->state->lock);current=(safe->state->file==source);}if(current){safe->setWaveformData(std::move(p));if(safe->outputWindow)safe->outputWindow->setPreviewAudioFile(audio);}}}),true);
+            waveformJobs.addJob(new WaveformJob(f,[safe, source=f](std::vector<float> p, juce::File audio){if(safe){bool current=false;{const juce::ScopedLock sl(safe->state->lock);current=(safe->state->file==source);}if(current){safe->setWaveformData(std::move(p));}}}),true);
             ensureOutputWindow();
             outputWindow->setVisible(true);outputWindow->toFront(true);
             // Start the source preview immediately so the user can position markers
@@ -1744,7 +1708,7 @@ private:
     ReadableLookAndFeel readableLookAndFeel;
     juce::TextButton newProject,openProject,saveProject,saveAsProject;
     juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
-    juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton,audioOutputButton,preloadClipButton,preloadAllButton,localMuteButton,noteReleaseButton,previewAudioButton,refreshAudioButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice,audioOutputChoice;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel,audioOutputLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
+    juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton,audioOutputButton,preloadClipButton,preloadAllButton,localMuteButton,noteReleaseButton,refreshAudioButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice,audioOutputChoice;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel,audioOutputLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
 };
 
 class MainWindow final : public juce::DocumentWindow {
