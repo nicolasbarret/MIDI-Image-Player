@@ -1021,8 +1021,7 @@ public:
     juce::String selectAudioOutput(const juce::String& name) {
         auto setup = audioDeviceManager.getAudioDeviceSetup();
         setup.outputDeviceName = name;
-        auto result = audioDeviceManager.setAudioDeviceSetup(setup, true);
-        return result.wasOk() ? juce::String{} : result.getErrorMessage();
+        return audioDeviceManager.setAudioDeviceSetup(setup, true);
     }
 
     void configureAudio() {
