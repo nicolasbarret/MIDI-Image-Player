@@ -1113,7 +1113,8 @@ public:
     void setOutputMuted(bool muted)
     {
 
-        audioClipSource.setMuted(muted);\n        timelineAudioSource.setMuted(muted);
+        audioClipSource.setMuted(muted);
+        timelineAudioSource.setMuted(muted);
     }    void setPreviewDuration(double seconds) { clipPreviewDuration = juce::jlimit(1.0, 8.0, seconds); }
 
     juce::StringArray availableAudioOutputs() const {
