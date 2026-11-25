@@ -1164,7 +1164,10 @@ public:
         }
         addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
         addAndMakeVisible(outputButton);addAndMakeVisible(audioOutputButton);
-        addAndMakeVisible(localMuteButton);
+        addAndMakeVisible(localMuteButton);addAndMakeVisible(noteReleaseButton);
+        state->fadeOnNoteOff=settings->getBoolValue("fadeOnNoteOff",false);
+        noteReleaseButton.setButtonText(state->fadeOnNoteOff ? "Relâchement : fondu" : "Relâchement : arrêt net");
+        noteReleaseButton.onClick=[this]{ {const juce::ScopedLock sl(state->lock);state->fadeOnNoteOff=!state->fadeOnNoteOff;noteReleaseButton.setButtonText(state->fadeOnNoteOff ? "Relâchement : fondu" : "Relâchement : arrêt net");settings->setValue("fadeOnNoteOff",state->fadeOnNoteOff);settings->saveIfNeeded();} };
         localMuteButton.setButtonText("Mute audio désactivé");localMuteButton.setClickingTogglesState(true);
         localMuteButton.onClick=[this]{const bool muted=localMuteButton.getToggleState();localMuteButton.setButtonText(muted?"Mute audio activé":"Mute audio désactivé");if(outputWindow)outputWindow->setOutputMuted(muted);};
         openVideo.setButtonText("Ouvrir une vidéo");openVideo.onClick=[this]{chooseVideo();};
@@ -1257,7 +1260,7 @@ public:
         saveProject.setBounds(projectBar.removeFromLeft(115));projectBar.removeFromLeft(7);
         saveAsProject.setBounds(projectBar.removeFromLeft(145));
         a.removeFromTop(8);
-        auto top=a.removeFromTop(260);auto left=top.removeFromLeft(250);videoStatus.setBounds(left.removeFromTop(44));localMuteButton.setBounds(left.removeFromTop(32));auto controls=top.reduced(12,0);
+        auto top=a.removeFromTop(260);auto left=top.removeFromLeft(250);videoStatus.setBounds(left.removeFromTop(44));localMuteButton.setBounds(left.removeFromTop(32));noteReleaseButton.setBounds(left.removeFromTop(32));auto controls=top.reduced(12,0);
         openVideo.setBounds(controls.removeFromTop(36));controls.removeFromTop(8);play.setBounds(controls.removeFromTop(34));controls.removeFromTop(8);
         inputLabel.setBounds(controls.removeFromTop(20));inputBox.setBounds(controls.removeFromTop(28));controls.removeFromTop(5);
         outputLabel.setBounds(controls.removeFromTop(20));outputBox.setBounds(controls.removeFromTop(28));refresh.setBounds(controls.removeFromTop(30));audioOutputButton.setBounds(controls.removeFromTop(44));
@@ -1594,7 +1597,7 @@ private:
     ReadableLookAndFeel readableLookAndFeel;
     juce::TextButton newProject,openProject,saveProject,saveAsProject;
     juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
-    juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton,audioOutputButton,preloadClipButton,localMuteButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
+    juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton,audioOutputButton,preloadClipButton,localMuteButton,noteReleaseButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
 };
 
 class MainWindow final : public juce::DocumentWindow {
