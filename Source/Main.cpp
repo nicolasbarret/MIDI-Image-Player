@@ -468,7 +468,7 @@ public:
                 const int sourceChannel = juce::jmin(channel, sourceChannels - 1);
                 const float a = scratch.getSample(sourceChannel, index);
                 const float b = scratch.getSample(sourceChannel, next);
-                info.buffer->addSample(channel, info.startSample + i, a + (b - a) * fraction);
+                info.buffer->addSample(channel, info.startSample + i, (a + (b - a) * fraction) * (muted ? 0.0f : 1.0f));
             }
         }
         position += info.numSamples * ratio;
@@ -1113,7 +1113,7 @@ public:
     void setOutputMuted(bool muted)
     {
 
-        audioClipSource.setMuted(muted);
+        audioClipSource.setMuted(muted);\n        timelineAudioSource.setMuted(muted);
     }    void setPreviewDuration(double seconds) { clipPreviewDuration = juce::jlimit(1.0, 8.0, seconds); }
 
     juce::StringArray availableAudioOutputs() const {
