@@ -932,7 +932,7 @@ public:
     void stop()
     {
         sourceVideo.stop();
-
+        previewTransport.stop();
         clipPlayer.stop();
         audioClipSource.stop();
     }
@@ -1014,6 +1014,7 @@ public:
         // is actually prepared and can start. This also makes missing clips harmless.
         if (!clipPlayer.trigger(pitchClass))
             return false;
+        previewTransport.stop();
         audioClipSource.setClip(clipPlayer.audioForClip(pitchClass),clipPlayer.audioRateForClip(pitchClass));
 
         sourceVideo.pause();
@@ -1028,6 +1029,7 @@ public:
     {
         clipPlayer.setClips({}, 3.0);
         audioClipSource.stop();
+        previewTransport.stop();
     }
     void setOutputMuted(bool muted)
     {
@@ -1413,6 +1415,10 @@ private:
 
     void cancelPreload(const juce::String& reason)
     {
+        batchPreloadActive=false;
+        batchPreloadNotes.clear();
+        batchPreloadPosition=0;
+        preloadAllButton.setEnabled(true);
         ++preloadGeneration;
         clipJobs.removeAllJobs(true, 0);
         preloadNoteIndex = -1;
@@ -1464,6 +1470,7 @@ private:
 
         if (!source.existsAsFile())
         {
+            if(batchRun){batchPreloadActive=false;batchPreloadNotes.clear();preloadAllButton.setEnabled(true);}
             setPreloadMessage("Charge d'abord une vidéo source.");
             lastPreloadMessage = {};
             return;
@@ -1481,8 +1488,9 @@ private:
         clipJobs.removeAllJobs(true, 0);
         preloadFeedback = std::make_shared<ClipPreloadFeedback>();
         preloadNoteIndex = note;
-        setPreloadMessage("Préparation manuelle de " + noteLabel(note)
-                          + " depuis " + juce::String(markerStart, 3) + " s...",
+        setPreloadMessage(batchRun ? ("Préchargement global " + juce::String(batchPreloadPosition)
+                          + " / " + juce::String(batchPreloadNotes.size()) + " : " + noteLabel(note))
+                          : ("Préparation de " + noteLabel(note) + " depuis " + juce::String(markerStart, 3) + " s..."),
                           0.0, true);
         lastPreloadMessage = {};
         preloadProgressValue = 0.0;
