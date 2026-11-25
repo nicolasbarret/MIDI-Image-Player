@@ -76,6 +76,8 @@ struct VideoState {
     int octaveCount=1;
     double duration=0.0, playhead=0.0;
     std::deque<int> pendingTriggers;
+    std::deque<int> pendingNoteOffs;
+    bool fadeOnNoteOff = false;
     std::function<void()> dispatchPlayback;
 };
 static juce::String markerString(const std::vector<double>& v) {
@@ -101,6 +103,14 @@ private:
         std::function<void()> notify;
         {
             const juce::ScopedLock sl(state->lock);
+            if(m.isNoteOff()) {
+                const int clipIndex=m.getNoteNumber()-48;
+                if(clipIndex>=0 && clipIndex<state->octaveCount*PitchCount) {
+                    state->pendingNoteOffs.push_back(clipIndex);
+                    while(state->pendingNoteOffs.size()>128) state->pendingNoteOffs.pop_front();
+                    dispatch=true;
+                }
+            }
             if(m.isNoteOn()) {
                 const int midiNote=m.getNoteNumber();
                 const int clipIndex=midiNote-48; // MIDI Do3 is note 48
@@ -445,6 +455,7 @@ public:
                 return false;
 
             activeClip = clipIndex;
+            fading = false;
             playing = true;
             paused = false;
             startTimeMs = juce::Time::getMillisecondCounter();
@@ -454,6 +465,15 @@ public:
         }
         repaint();
         return true;
+    }
+
+    void releaseNote(int clipIndex, bool fade)
+    {
+        const juce::ScopedLock sl(lock);
+        if (activeClip != clipIndex) return;
+        if (fade) { fading = true; fadeStartMs = juce::Time::getMillisecondCounter(); playing = false; paused = false; }
+        else { activeClip = -1; playing = false; paused = false; currentImage = juce::Image(); displayedFrame = -1; }
+        repaint();
     }
 
     void stop()
@@ -505,6 +525,9 @@ public:
         if (image.isValid())
             g.drawImageWithin(image, 0, 0, getWidth(), getHeight(),
                               juce::RectanglePlacement::centred);
+        float alpha = 0.0f;
+        { const juce::ScopedLock sl(lock); if (fading) alpha = juce::jlimit(0.0f, 1.0f, (float)(juce::Time::getMillisecondCounter()-fadeStartMs)/300.0f); }
+        if (alpha > 0.0f) { g.setColour(juce::Colours::black.withAlpha(alpha)); g.fillAll(); }
     }
 
 private:
@@ -515,6 +538,7 @@ private:
         bool changed = false;
         {
             const juce::ScopedLock sl(lock);
+            if (fading) { if (juce::Time::getMillisecondCounter()-fadeStartMs >= 300) { fading=false; activeClip=-1; currentImage=juce::Image(); displayedFrame=-1; changed=true; } else changed=true; }
             if (activeClip < 0 || paused || !playing)
                 return;
 
@@ -551,6 +575,8 @@ private:
     int displayedFrame = -1;
     bool playing = false;
     bool paused = false;
+    bool fading = false;
+    std::uint32_t fadeStartMs = 0;
     double clipDuration = 3.0;
     std::uint32_t startTimeMs = 0;
     std::uint32_t pausedElapsedMs = 0;
@@ -1042,11 +1068,15 @@ private:
     }
     void handleAsyncUpdate() override
     {
-        std::deque<int> triggers;
+        std::deque<int> triggers, releases;
+        bool fadeRelease = false;
         {
             const juce::ScopedLock sl(state->lock);
             triggers.swap(state->pendingTriggers);
+            releases.swap(state->pendingNoteOffs);
+            fadeRelease = state->fadeOnNoteOff;
         }
+        for (int note : releases) { clipPlayer.releaseNote(note, fadeRelease); if (clipMode) audioClipSource.stop(); }
 
         // Route MIDI hits through triggerClip(), not directly to ClipFramePlayer.
         // triggerClip() performs the essential VLC -> prepared-frame display switch.
