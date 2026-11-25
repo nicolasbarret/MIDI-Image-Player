@@ -830,7 +830,7 @@ public:
         addAndMakeVisible(sourceVideo);
         addAndMakeVisible(clipPlayer);
         audioDeviceManager.initialise(0,2,nullptr,true);
-        audioMixer.addInputSource(&previewAudioTransport, false);
+
         audioMixer.addInputSource(&audioClipSource, false);
         audioSourcePlayer.setSource(&audioMixer);
         audioDeviceManager.addAudioCallback(&audioSourcePlayer);
@@ -856,8 +856,7 @@ public:
         audioDeviceManager.removeAudioCallback(&audioSourcePlayer);
         audioSourcePlayer.setSource(nullptr);
         audioMixer.removeAllInputs();
-        previewAudioTransport.setSource(nullptr);
-        previewAudioReader.reset();
+
         audioDeviceManager.closeAudioDevice();
         const juce::ScopedLock sl(state->lock);
         state->dispatchPlayback = {};
@@ -883,7 +882,7 @@ public:
         sourceVideo.setVisible(true);
         sourceVideo.setOutputVisible(true);
         audioClipSource.stop();
-        previewAudioTransport.start();
+
         sourceVideo.play();
         clipMode = false;
         return sourceVideo.playbackDiagnostic();
@@ -894,13 +893,13 @@ public:
         if (clipMode) {
             clipPlayer.pause();
             audioClipSource.pause();
-        } else { sourceVideo.pause(); previewAudioTransport.stop(); }
+        } else { sourceVideo.pause();  }
     }
 
     void stop()
     {
         sourceVideo.stop();
-        previewAudioTransport.stop();
+
         clipPlayer.stop();
         audioClipSource.stop();
     }
@@ -920,7 +919,7 @@ public:
         sourceVideo.setOutputVisible(true);
         clipMode = false;
         sourceVideo.setPlayPosition(juce::jmax(0.0, seconds));
-        previewAudioTransport.setPosition(juce::jmax(0.0, seconds));
+
     }
 
     double position() const
@@ -960,7 +959,6 @@ public:
         if (!clipPlayer.trigger(pitchClass))
             return false;
         audioClipSource.setClip(clipPlayer.audioForClip(pitchClass),clipPlayer.audioRateForClip(pitchClass));
-        previewAudioTransport.stop();
 
         sourceVideo.pause();
         sourceVideo.setOutputVisible(false);
@@ -977,27 +975,9 @@ public:
     }
     void setOutputMuted(bool muted)
     {
-        previewAudioTransport.setGain(muted ? 0.0f : 1.0f);
-        audioClipSource.setMuted(muted);
-    }
 
-    void setPreviewAudioFile(const juce::File& file)
-    {
-        previewAudioTransport.stop();
-        previewAudioTransport.setSource(nullptr);
-        previewAudioReader.reset();
-        if (!file.existsAsFile()) return;
-        juce::AudioFormatManager formats;
-        formats.registerBasicFormats();
-        std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
-        if (!reader) return;
-        const double sampleRate = reader->sampleRate;
-        previewAudioReader = std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
-        previewAudioTransport.setSource(previewAudioReader.get(), 32768, nullptr, sampleRate, 2);
-        previewAudioTransport.setPosition(sourceVideo.getPlayPosition());
-        if (sourceVideo.isPlaying()) previewAudioTransport.start();
-    }
-    void setPreviewDuration(double seconds) { clipPreviewDuration = juce::jlimit(1.0, 8.0, seconds); }
+        audioClipSource.setMuted(muted);
+    }    void setPreviewDuration(double seconds) { clipPreviewDuration = juce::jlimit(1.0, 8.0, seconds); }
 
     void configureAudio() {
         juce::DialogWindow::LaunchOptions options;
@@ -1023,7 +1003,7 @@ private:
         if (file != loadedFile)
         {
             sourceVideo.stop();
-            previewAudioTransport.stop();
+
             sourceVideo.unload();
             loadedFile = file;
             if (loadedFile.existsAsFile())
@@ -1042,7 +1022,7 @@ private:
         syncFile();
         if(previewEndMs!=0 && juce::Time::getMillisecondCounter()>=previewEndMs) {
             sourceVideo.pause();
-            previewAudioTransport.stop();
+
             previewEndMs=0;
         }
     }
@@ -1056,8 +1036,7 @@ private:
         sourceVideo.setOutputVisible(true);
         clipMode=false;
         sourceVideo.setPlayPosition(juce::jmax(0.0,seconds));
-        previewAudioTransport.setPosition(juce::jmax(0.0,seconds));
-        previewAudioTransport.start();
+
         sourceVideo.play();
         previewEndMs=juce::Time::getMillisecondCounter()+(juce::uint32)juce::roundToInt(clipPreviewDuration*1000.0);
     }
@@ -1094,8 +1073,7 @@ private:
     juce::uint32 previewEndMs=0;
     double clipPreviewDuration=2.0;
     ClipAudioSource audioClipSource;
-    juce::AudioTransportSource previewAudioTransport;
-    std::unique_ptr<juce::AudioFormatReaderSource> previewAudioReader;
+
     juce::MixerAudioSource audioMixer;
     juce::AudioDeviceManager audioDeviceManager;
     juce::AudioSourcePlayer audioSourcePlayer;
@@ -1118,7 +1096,7 @@ public:
     juce::String videoDiagnostic() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->diagnostic(); return "Sortie OBS non ouverte"; }
     void configureAudio() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->configureAudio(); }
     void setOutputMuted(bool muted) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setOutputMuted(muted); }
-    void setPreviewAudioFile(const juce::File& f) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setPreviewAudioFile(f); }
+
     void setPreviewDuration(double seconds){if(auto* v=dynamic_cast<VideoOutputView*>(getContentComponent()))v->setPreviewDuration(seconds);}
     void setPreparedClip(int noteIndex, PreparedClip clip, double seconds) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setPreparedClip(noteIndex, std::move(clip), seconds); }
     void clearPreparedClip(int noteIndex) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->clearPreparedClip(noteIndex); }
@@ -1225,7 +1203,7 @@ public:
         g.drawText("Départ Do3 | Les notes sont affichées à gauche de chaque piste. Teste un marqueur avant de le précharger.",24,42,getWidth()-48,22,juce::Justification::centredLeft);
     }
     void setWaveformData(std::vector<float> p) { timeline.setWaveform(std::move(p)); }
-    void setPreviewAudioFile(const juce::File& f){ensureOutputWindow();outputWindow->setPreviewAudioFile(f);}
+
     void changeOctaveCount(int count) {
         count=juce::jlimit(1,MaxOctaves,count);
         { const juce::ScopedLock sl(state->lock); state->octaveCount=count; }
@@ -1304,7 +1282,7 @@ private:
             {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=0.0;state->playhead=0.0;state->pendingTriggers.clear();}
             timeline.setDuration(60.0);timeline.setWaveform({});timeline.repaint();
             juce::Component::SafePointer<MainView> safe(this);
-            waveformJobs.addJob(new WaveformJob(f,[safe, source=f](std::vector<float> p, juce::File audio){if(safe){bool current=false;{const juce::ScopedLock sl(safe->state->lock);current=(safe->state->file==source);}if(current){safe->setWaveformData(std::move(p));safe->setPreviewAudioFile(audio);}}}),true);
+            waveformJobs.addJob(new WaveformJob(f,[safe, source=f](std::vector<float> p, juce::File){if(safe){bool current=false;{const juce::ScopedLock sl(safe->state->lock);current=(safe->state->file==source);}if(current)safe->setWaveformData(std::move(p));}}),true);
             ensureOutputWindow();
             outputWindow->setVisible(true);outputWindow->toFront(true);
             // Start the source preview immediately so the user can position markers
