@@ -392,7 +392,6 @@ public:
     {
         const juce::ScopedLock sl(lock);
         playing = false;
-        reader.reset();
         position = 0.0;
     }
 
@@ -965,7 +964,8 @@ public:
         addAndMakeVisible(clipPlayer);
         audioDeviceManager.initialise(0,2,nullptr,true);
 
-        audioMixer.addInputSource(&audioClipSource, false);\n         audioMixer.addInputSource(&timelineAudioSource, false);
+        audioMixer.addInputSource(&audioClipSource, false);
+         audioMixer.addInputSource(&timelineAudioSource, false);
          audioSourcePlayer.setSource(&audioMixer);
         audioDeviceManager.addAudioCallback(&audioSourcePlayer);
         clipPlayer.setVisible(false);
@@ -989,7 +989,8 @@ public:
         sourceVideo.unload();
          audioDeviceManager.removeAudioCallback(&audioSourcePlayer);
         audioSourcePlayer.setSource(nullptr);
-        audioMixer.removeAllInputs();\n         timelineAudioSource.releaseResources();
+        audioMixer.removeAllInputs();
+         timelineAudioSource.releaseResources();
 
         audioDeviceManager.closeAudioDevice();
         const juce::ScopedLock sl(state->lock);
@@ -1106,6 +1107,9 @@ public:
         clipPlayer.setClips({}, 3.0);
         audioClipSource.stop();
     }
+    bool setTimelineAudioFile(const juce::File& file) { return timelineAudioSource.setFile(file); }
+    void previewTimelineAudio(double seconds) { timelineAudioSource.seekAndPlay(seconds); }
+    void stopTimelineAudio() { timelineAudioSource.stop(); }
     void setOutputMuted(bool muted)
     {
 
@@ -1230,6 +1234,7 @@ private:
     juce::uint32 previewEndMs=0;
     double clipPreviewDuration=2.0;
     ClipAudioSource audioClipSource;
+    TimelineAudioSource timelineAudioSource;
 
     juce::MixerAudioSource audioMixer;
      juce::AudioDeviceManager audioDeviceManager;
@@ -1256,7 +1261,10 @@ public:
     juce::String currentAudioOutput() const { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->currentAudioOutput(); return {}; }
     juce::String selectAudioOutput(const juce::String& name) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->selectAudioOutput(name); return "Fenêtre audio indisponible."; }
     void setOutputMuted(bool muted) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setOutputMuted(muted); }
-    bool setTimelineAudioFile(const juce::File& file) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->setTimelineAudioFile(file); return false; }\n    void previewTimelineAudio(double seconds) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->previewTimelineAudio(seconds); }\n    void stopTimelineAudio() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->stopTimelineAudio(); }\n
+    bool setTimelineAudioFile(const juce::File& file) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) return v->setTimelineAudioFile(file); return false; }
+    void previewTimelineAudio(double seconds) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->previewTimelineAudio(seconds); }
+    void stopTimelineAudio() { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->stopTimelineAudio(); }
+
     void setPreviewDuration(double seconds){if(auto* v=dynamic_cast<VideoOutputView*>(getContentComponent()))v->setPreviewDuration(seconds);}
      void setPreparedClip(int noteIndex, PreparedClip clip, double seconds) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->setPreparedClip(noteIndex, std::move(clip), seconds); }
     void clearPreparedClip(int noteIndex) { if (auto* v = dynamic_cast<VideoOutputView*>(getContentComponent())) v->clearPreparedClip(noteIndex); }
