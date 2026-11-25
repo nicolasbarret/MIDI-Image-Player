@@ -1007,7 +1007,7 @@ public:
 
     juce::StringArray availableAudioOutputs() const {
         juce::StringArray names;
-        if (auto* type = audioDeviceManager.getCurrentDeviceType())
+        if (auto* type = audioDeviceManager.getCurrentDeviceTypeObject())
             names = type->getDeviceNames(false);
         return names;
     }
@@ -1019,7 +1019,8 @@ public:
     }
 
     juce::String selectAudioOutput(const juce::String& name) {
-        auto setup = audioDeviceManager.getAudioDeviceSetup();
+        juce::AudioDeviceManager::AudioDeviceSetup setup;
+        audioDeviceManager.getAudioDeviceSetup(setup);
         setup.outputDeviceName = name;
         return audioDeviceManager.setAudioDeviceSetup(setup, true);
     }
