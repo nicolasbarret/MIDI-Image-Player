@@ -926,7 +926,6 @@ public:
     void stop()
     {
         sourceVideo.stop();
-        previewTransport.stop();
         clipPlayer.stop();
         audioClipSource.stop();
     }
@@ -985,7 +984,6 @@ public:
         // is actually prepared and can start. This also makes missing clips harmless.
         if (!clipPlayer.trigger(pitchClass))
             return false;
-        previewTransport.stop();
         audioClipSource.setClip(clipPlayer.audioForClip(pitchClass),clipPlayer.audioRateForClip(pitchClass));
 
         sourceVideo.pause();
@@ -1000,7 +998,6 @@ public:
     {
         clipPlayer.setClips({}, 3.0);
         audioClipSource.stop();
-        previewTransport.stop();
     }
     void setOutputMuted(bool muted)
     {
