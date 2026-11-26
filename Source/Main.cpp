@@ -1,5 +1,8 @@
 #include <JuceHeader.h>
 #if JUCE_WINDOWS
+ #ifndef NOMINMAX
+  #define NOMINMAX
+ #endif
  #include <windows.h>
 #endif
 #include "LibVlcPlayer.h"
