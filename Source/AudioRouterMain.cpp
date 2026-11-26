@@ -163,6 +163,7 @@ private:
             }
 
             const double streamRate = (double) header.sampleRate;
+            streamSampleRate.store(header.sampleRate);
             juce::Component::SafePointer<RouterComponent> safe(this);
             juce::MessageManager::callAsync([safe, streamRate]
             {
@@ -243,7 +244,14 @@ private:
     void timerCallback() override
     {
         if (activePipe.load() == INVALID_HANDLE_VALUE)
+        {
+            streamSampleRate.store(0);
             status.setText("En attente de MIDI Video Player...", juce::dontSendNotification);
+        }
+        else if (streamSampleRate.load() > 0)
+        {
+            matchSampleRate((double) streamSampleRate.load());
+        }
     }
 
     juce::AudioDeviceManager deviceManager;
@@ -255,6 +263,7 @@ private:
     juce::AbstractFifo fifo;
     juce::AudioBuffer<float> ring;
     std::atomic<HANDLE> activePipe { INVALID_HANDLE_VALUE };
+    std::atomic<uint32_t> streamSampleRate { 0 };
     std::atomic<double> currentOutputRate { 44100.0 };
 };
 
