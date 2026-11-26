@@ -18,3 +18,14 @@ if(MSVC)
   target_compile_options(MIDIVideoPlayer PRIVATE /utf-8)
 endif()
 target_link_libraries(MIDIVideoPlayer PRIVATE juce::juce_audio_utils juce::juce_gui_extra juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+
+# Companion standalone audio router. It receives the private named-pipe stream
+# emitted by MIDI Video Player and outputs it through a selectable audio device.
+juce_add_gui_app(MIDIAudioRouter PRODUCT_NAME "MIDI Audio Router" COMPANY_NAME "Nicolas" BUNDLE_ID "fr.nicolas.midiaudiorouter")
+juce_generate_juce_header(MIDIAudioRouter)
+target_sources(MIDIAudioRouter PRIVATE Source/AudioRouterMain.cpp)
+target_compile_definitions(MIDIAudioRouter PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+if(MSVC)
+  target_compile_options(MIDIAudioRouter PRIVATE /utf-8)
+endif()
+target_link_libraries(MIDIAudioRouter PRIVATE juce::juce_audio_utils juce::juce_gui_extra juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
