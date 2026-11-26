@@ -32,8 +32,8 @@ class RouterComponent final : public juce::Component,
 public:
     RouterComponent()
         : juce::Thread("MIDI audio pipe reader"),
-          fifo(65536),
-          ring(2, 65536)
+          fifo(2048),
+          ring(2, 2048)
     {
         addAndMakeVisible(title);
         title.setText("MIDI Audio Router", juce::dontSendNotification);
@@ -233,13 +233,43 @@ private:
         }
 
         auto setup = deviceManager.getAudioDeviceSetup();
+        bool changed = false;
         if (std::abs(setup.sampleRate - wantedRate) > 1.0)
         {
             setup.sampleRate = wantedRate;
+            changed = true;
+        }
+
+        // Keep the VB-CABLE output device buffer small for live monitoring.
+        const auto bufferSizes = device->getAvailableBufferSizes();
+        if (!bufferSizes.isEmpty())
+        {
+            int bestSize = bufferSizes.getFirst();
+            for (const int size : bufferSizes)
+            {
+                if (size >= 128 && size <= 256)
+                {
+                    bestSize = size;
+                    if (size == 256)
+                        break;
+                }
+                else if (bestSize < 128 && size > bestSize)
+                {
+                    bestSize = size;
+                }
+            }
+            if (setup.bufferSize != bestSize)
+            {
+                setup.bufferSize = bestSize;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
             const auto error = deviceManager.setAudioDeviceSetup(setup, true);
             if (error.isNotEmpty())
-                status.setText("Impossible de régler " + juce::String((int) wantedRate)
-                               + " Hz : " + error, juce::dontSendNotification);
+                status.setText("Réglage audio impossible : " + error, juce::dontSendNotification);
         }
     }
 
