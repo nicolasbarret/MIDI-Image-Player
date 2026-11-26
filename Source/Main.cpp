@@ -1134,6 +1134,13 @@ public:
         addAndMakeVisible(sourceVideo);
         addAndMakeVisible(clipPlayer);
         audioDeviceManager.initialise(0,2,nullptr,true);
+        // Keep the player and its IPC stream at 44.1 kHz, matching the
+        // audio files prepared by FFmpeg. The router reads this actual rate
+        // from the stream header and configures its output to match.
+        juce::AudioDeviceManager::AudioDeviceSetup audioSetup;
+        audioDeviceManager.getAudioDeviceSetup(audioSetup);
+        audioSetup.sampleRate = 44100.0;
+        audioDeviceManager.setAudioDeviceSetup(audioSetup, true);
 
         audioMixer.addInputSource(&audioClipSource, false);
          audioMixer.addInputSource(&timelineAudioSource, false);
@@ -1481,11 +1488,6 @@ public:
         addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
         addAndMakeVisible(outputButton);addAndMakeVisible(audioOutputButton);
         addAndMakeVisible(localMuteButton);addAndMakeVisible(noteReleaseButton);
-        addAndMakeVisible(audioOutputLabel);addAndMakeVisible(audioOutputChoice);addAndMakeVisible(refreshAudioButton);
-        audioOutputLabel.setText("Périphérique audio de sortie",juce::dontSendNotification);
-        refreshAudioButton.setButtonText("Actualiser les sorties audio");
-        refreshAudioButton.onClick=[this]{refreshAudioOutputs();};
-        audioOutputChoice.onChange=[this]{selectAudioOutput();};
         state->fadeOnNoteOff=settings->getBoolValue("fadeOnNoteOff",false);
         noteReleaseButton.setButtonText(state->fadeOnNoteOff ? "Relâchement : fondu" : "Relâchement : arrêt net");
         noteReleaseButton.onClick=[this]{ {const juce::ScopedLock sl(state->lock);state->fadeOnNoteOff=!state->fadeOnNoteOff;noteReleaseButton.setButtonText(state->fadeOnNoteOff ? "Relâchement : fondu" : "Relâchement : arrêt net");settings->setValue("fadeOnNoteOff",state->fadeOnNoteOff);settings->saveIfNeeded();} };
@@ -1529,7 +1531,7 @@ public:
         refresh.setButtonText("Actualiser");refresh.onClick=[this]{refreshMidi();};inputBox.onChange=[this]{selectInput();};outputBox.onChange=[this]{selectOutput();};
         outputButton.setButtonText("Ouvrir la sortie vidéo OBS");outputButton.onClick=[this]{ensureOutputWindow();outputWindow->setVisible(true);outputWindow->toFront(true);};
         audioOutputButton.setButtonText("Configurer la sortie audio");audioOutputButton.onClick=[this]{ensureOutputWindow();outputWindow->configureAudio();};
-        refreshMidi();ensureOutputWindow();refreshAudioOutputs();setSize(1120,900);
+        refreshMidi();ensureOutputWindow();setSize(1120,900);
         auto recovery=recoveryProjectFile();
         bool restoredProject = false;
         if(recovery.existsAsFile() && recovery.getSize()>0) {
@@ -1584,7 +1586,7 @@ public:
         saveProject.setBounds(projectBar.removeFromLeft(115));projectBar.removeFromLeft(7);
         saveAsProject.setBounds(projectBar.removeFromLeft(145));
         a.removeFromTop(8);
-        auto top=a.removeFromTop(260);auto left=top.removeFromLeft(250);videoStatus.setBounds(left.removeFromTop(44));localMuteButton.setBounds(left.removeFromTop(32));noteReleaseButton.setBounds(left.removeFromTop(32));left.removeFromTop(5);audioOutputLabel.setBounds(left.removeFromTop(20));audioOutputChoice.setBounds(left.removeFromTop(28));left.removeFromTop(4);refreshAudioButton.setBounds(left.removeFromTop(28));auto controls=top.reduced(12,0);
+        auto top=a.removeFromTop(260);auto left=top.removeFromLeft(250);videoStatus.setBounds(left.removeFromTop(44));localMuteButton.setBounds(left.removeFromTop(32));noteReleaseButton.setBounds(left.removeFromTop(32));auto controls=top.reduced(12,0);
         openVideo.setBounds(controls.removeFromTop(36));controls.removeFromTop(8);play.setBounds(controls.removeFromTop(34));controls.removeFromTop(8);
         inputLabel.setBounds(controls.removeFromTop(20));inputBox.setBounds(controls.removeFromTop(28));controls.removeFromTop(5);
         outputLabel.setBounds(controls.removeFromTop(20));outputBox.setBounds(controls.removeFromTop(28));refresh.setBounds(controls.removeFromTop(30));audioOutputButton.setBounds(controls.removeFromTop(44));
@@ -1950,38 +1952,6 @@ private:
         }
     }
 
-    void refreshAudioOutputs(){
-        if (!outputWindow) ensureOutputWindow();
-        audioOutputChoice.clear(juce::dontSendNotification);
-        audioOutputChoice.addItem("Choisir une sortie audio...",1);
-        const auto names = outputWindow->availableAudioOutputs();
-        for (int i=0;i<names.size();++i)
-            audioOutputChoice.addItem(names[i],i+2);
-        const auto saved = settings->getValue("audioOutput");
-        const auto current = outputWindow->currentAudioOutput();
-        const auto preferred = saved.isNotEmpty() ? saved : current;
-        for (int i=0;i<names.size();++i)
-            if (names[i] == preferred) {
-                audioOutputChoice.setSelectedId(i+2,juce::dontSendNotification);
-                break;
-            }
-    }
-    void selectAudioOutput(){
-        const int index=audioOutputChoice.getSelectedId()-2;
-        if(index<0 || !outputWindow) return;
-        const auto names=outputWindow->availableAudioOutputs();
-        if(index>=names.size()) return;
-        const auto error=outputWindow->selectAudioOutput(names[index]);
-        if(error.isEmpty()){
-            settings->setValue("audioOutput",names[index]);
-            settings->saveIfNeeded();
-            videoStatus.setText("Sortie audio sélectionnée : "+names[index],juce::dontSendNotification);
-        } else {
-            videoStatus.setText("Impossible de sélectionner cette sortie : "+error,juce::dontSendNotification);
-            refreshAudioOutputs();
-        }
-    }
-
     void refreshMidi(){ins=router.inputs();outs=router.outputs();inputBox.clear();outputBox.clear();inputBox.addItem("Choisir une entrée...",1);outputBox.addItem("Choisir une sortie...",1);for(int i=0;i<ins.size();++i)inputBox.addItem(ins.getReference(i).name,i+2);for(int i=0;i<outs.size();++i)outputBox.addItem(outs.getReference(i).name,i+2);
         auto si=settings->getValue("input"),so=settings->getValue("output");for(int i=0;i<ins.size();++i)if(ins.getReference(i).identifier==si)inputBox.setSelectedId(i+2,juce::dontSendNotification);for(int i=0;i<outs.size();++i)if(outs.getReference(i).identifier==so)outputBox.setSelectedId(i+2,juce::dontSendNotification);}
     void selectInput(){int i=inputBox.getSelectedId()-2;if(i>=0&&i<ins.size()){auto d=ins.getReference(i);router.openInput(d.identifier);settings->setValue("input",d.identifier);settings->saveIfNeeded();}}
@@ -1999,7 +1969,7 @@ private:
     ReadableLookAndFeel readableLookAndFeel;
     juce::TextButton newProject,openProject,saveProject,saveAsProject;
     juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
-    juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton,audioOutputButton,preloadClipButton,preloadAllButton,localMuteButton,noteReleaseButton,refreshAudioButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice,audioOutputChoice;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel,audioOutputLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
+    juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton,audioOutputButton,preloadClipButton,preloadAllButton,localMuteButton,noteReleaseButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
 };
 
 class MainWindow final : public juce::DocumentWindow {
