@@ -1,4 +1,7 @@
 #include <JuceHeader.h>
+#if JUCE_WINDOWS
+ #include <windows.h>
+#endif
 #include "LibVlcPlayer.h"
 
 #include <array>
@@ -8,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <atomic>
 #include <limits>
 
 namespace {
