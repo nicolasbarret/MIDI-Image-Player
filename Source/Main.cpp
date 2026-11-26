@@ -150,6 +150,7 @@ public:
     explicit MarkerTimeline(std::shared_ptr<VideoState> s):state(std::move(s)){setMouseCursor(juce::MouseCursor::PointingHandCursor);}
     std::function<void(int)> changed;
     std::function<void(double)> seeked;
+    std::function<void()> previewStopped;
     void setDuration(double d){duration=juce::jmax(0.01,d);viewStart=juce::jlimit(0.0,juce::jmax(0.0,d-visibleDuration()),viewStart);repaint();}
     int requiredHeight() const { int n=1; { const juce::ScopedLock sl(state->lock); n=state->octaveCount*PitchCount; } return 25+n*22+60; }
     void refreshHeight(){setSize(getWidth(),requiredHeight());repaint();}
@@ -264,6 +265,8 @@ public:
             std::sort(v.begin(),v.end());
         }
         dragging=false;dragIndex=-1;
+        // Stop the audio audition as soon as the user releases a dragged marker.
+        if(markerWasDragged && previewStopped) previewStopped();
         // Clicking the waveform to seek must never regenerate every MIDI clip.
         if(markerWasDragged && changed)changed(dragRow);
     }
@@ -1520,6 +1523,7 @@ public:
         noteChoice.onChange=[this]{updatePreloadSelectionText();};
         timeline.changed=[this](int noteIndex){saveMarkers(noteIndex);};
         timeline.seeked=[this](double t){if(outputWindow){outputWindow->seekVideo(t);outputWindow->previewTimelineAudio(t);}};
+        timeline.previewStopped=[this]{if(outputWindow)outputWindow->stopTimelineAudio();};
         inputLabel.setText("Entrée MIDI",juce::dontSendNotification);outputLabel.setText("Sortie MIDI (loopMIDI)",juce::dontSendNotification);
 
         refresh.setButtonText("Actualiser");refresh.onClick=[this]{refreshMidi();};inputBox.onChange=[this]{selectInput();};outputBox.onChange=[this]{selectOutput();};
