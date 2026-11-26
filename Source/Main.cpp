@@ -1005,6 +1005,8 @@ public:
         copyToQueue(*info.buffer, info.startSample, start1, size1);
         copyToQueue(*info.buffer, info.startSample + size1, start2, size2);
         fifo.finishedWrite(size1 + size2);
+        if (clientConnected.load())
+            info.buffer->clear(info.startSample, info.numSamples);
     }
 
 private:
@@ -1055,9 +1057,11 @@ private:
                     || written != sizeof(header))
                 {
                     DisconnectNamedPipe(pipe); connected = false; headerSent = false;
+                    clientConnected.store(false);
                     continue;
                 }
                 headerSent = true;
+                clientConnected.store(true);
             }
 
             int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
@@ -1084,11 +1088,13 @@ private:
                 DisconnectNamedPipe(pipe);
                 connected = false;
                 headerSent = false;
+                clientConnected.store(false);
             }
         }
 
         if (pipe != INVALID_HANDLE_VALUE) {
             if (connected) DisconnectNamedPipe(pipe);
+            clientConnected.store(false);
             CloseHandle(pipe);
         }
     }
@@ -1097,6 +1103,7 @@ private:
     juce::AbstractFifo fifo;
     juce::AudioBuffer<float> queue;
     std::atomic<uint32_t> currentRate { 44100 };
+    std::atomic<bool> clientConnected { false };
 };
 #endif
 
