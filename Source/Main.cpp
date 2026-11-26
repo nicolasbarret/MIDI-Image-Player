@@ -975,8 +975,8 @@ class AudioBridgeSource final : public juce::AudioSource, private juce::Thread
 {
 public:
     explicit AudioBridgeSource(juce::AudioSource& source)
-        : juce::Thread("MIDI Video audio bridge"), upstream(source), fifo(32768),
-          queue(2, 32768)
+        : juce::Thread("MIDI Video audio bridge"), upstream(source), fifo(2048),
+          queue(2, 2048)
     {
         startThread();
     }
