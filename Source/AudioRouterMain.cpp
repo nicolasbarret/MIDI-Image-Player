@@ -136,7 +136,8 @@ private:
     void run() override
     {
         constexpr wchar_t pipeName[] = L"\\\\.\\pipe\\MIDIVideoPlayerAudio";
-        std::vector<float> interleaved(4096 * 2);
+        constexpr int packetFrames = 256;
+        std::vector<float> interleaved(packetFrames * 2);
 
         while (!threadShouldExit())
         {
@@ -182,8 +183,9 @@ private:
                                (DWORD)(interleaved.size() * sizeof(float))))
                     break;
 
+                constexpr int packetFrames = 256;
                 int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
-                fifo.prepareToWrite(4096, start1, size1, start2, size2);
+                fifo.prepareToWrite(packetFrames, start1, size1, start2, size2);
                 copyToRing(interleaved, 0, start1, size1);
                 copyToRing(interleaved, size1, start2, size2);
                 fifo.finishedWrite(size1 + size2);
