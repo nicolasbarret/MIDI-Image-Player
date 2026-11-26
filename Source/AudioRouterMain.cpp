@@ -6,6 +6,8 @@
  #include <windows.h>
 #endif
 #include <atomic>
+#include <cmath>
+#include <cstdint>
 #include <vector>
 
 #if ! JUCE_WINDOWS
@@ -161,14 +163,15 @@ private:
             }
 
             const double streamRate = (double) header.sampleRate;
-            juce::MessageManager::callAsync([this, streamRate]
+            juce::Component::SafePointer<RouterComponent> safe(this);
+            juce::MessageManager::callAsync([safe, streamRate]
             {
-                if (isVisible())
+                if (safe != nullptr)
                 {
-                    status.setText("Connecté | Flux " + juce::String((int) streamRate)
-                                   + " Hz | Choisis VB-CABLE Input ci-dessous.",
-                                   juce::dontSendNotification);
-                    matchSampleRate(streamRate);
+                    safe->status.setText("Connecté | Flux " + juce::String((int) streamRate)
+                                         + " Hz | Choisis VB-CABLE Input ci-dessous.",
+                                         juce::dontSendNotification);
+                    safe->matchSampleRate(streamRate);
                 }
             });
 
@@ -186,7 +189,6 @@ private:
             }
 
             closePipe(pipe);
-            fifo.reset();
         }
     }
 
