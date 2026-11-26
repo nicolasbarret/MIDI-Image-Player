@@ -427,6 +427,12 @@ public:
         playing = false;
     }
 
+    void setMuted(bool shouldMute)
+    {
+        const juce::ScopedLock sl(lock);
+        muted = shouldMute;
+    }
+
     void getNextAudioBlock(const juce::AudioSourceChannelInfo& info) override
     {
         info.clearActiveBufferRegion();
@@ -482,6 +488,7 @@ private:
     juce::AudioBuffer<float> scratch;
     double position = 0.0, sourceRate = 44100.0, outputRate = 44100.0;
     bool playing = false;
+    bool muted = false;
 };
 
 class ClipFramePlayer final : public juce::Component, private juce::Timer
