@@ -1024,7 +1024,8 @@ private:
     void run() override
     {
         constexpr wchar_t pipeName[] = L"\\\\.\\pipe\\MIDIVideoPlayerAudio";
-        std::vector<float> interleaved(2048 * 2);
+        constexpr int packetFrames = 256;
+        std::vector<float> interleaved(packetFrames * 2);
         HANDLE pipe = INVALID_HANDLE_VALUE;
         bool connected = false;
         bool headerSent = false;
@@ -1064,10 +1065,22 @@ private:
                 clientConnected.store(true);
             }
 
+            constexpr int packetFrames = 256;
+            if (fifo.getNumReady() < packetFrames)
+            {
+                Thread::sleep(1);
+                continue;
+            }
+
             int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
-            fifo.prepareToRead(2048, start1, size1, start2, size2);
+            fifo.prepareToRead(packetFrames, start1, size1, start2, size2);
             const int total = size1 + size2;
-            if (total == 0) { Thread::sleep(2); continue; }
+            if (total != packetFrames)
+            {
+                fifo.finishedRead(total);
+                Thread::sleep(1);
+                continue;
+            }
 
             int out = 0;
             for (int i = 0; i < size1; ++i, ++out) {
