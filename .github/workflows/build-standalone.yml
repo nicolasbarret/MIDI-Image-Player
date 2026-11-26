@@ -18,9 +18,12 @@ jobs:
         run: |
           $exe = Get-ChildItem -Path "build" -Filter "MIDI Video Player.exe" -Recurse | Select-Object -First 1
           if (-not $exe) { throw "MIDI Video Player.exe was not generated." }
+          $router = Get-ChildItem -Path "build" -Filter "MIDI Audio Router.exe" -Recurse | Select-Object -First 1
+          if (-not $router) { throw "MIDI Audio Router.exe was not generated." }
 
           New-Item -ItemType Directory -Force -Path "package/MIDI Video Player" | Out-Null
           Copy-Item $exe.FullName "package/MIDI Video Player/"
+          Copy-Item $router.FullName "package/MIDI Video Player/"
 
           # FFmpeg extracts and pre-decodes MIDI clips in the background.
           function Download-WithRetry {
