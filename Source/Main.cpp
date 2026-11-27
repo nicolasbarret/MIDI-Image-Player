@@ -1228,8 +1228,7 @@ private:
             releases.swap(state->pendingNoteOffs);
             fadeRelease = state->fadeOnNoteOff;
         }
-        // Note-off releases the visual animation only. Let clip audio finish naturally.
-        for (int note : releases) clipPlayer.releaseNote(note, fadeRelease);
+        for (int note : releases) { clipPlayer.releaseNote(note, fadeRelease); if (clipMode) audioClipSource.stop(); }
 
         // Route MIDI hits through triggerClip(), not directly to ClipFramePlayer.
         // triggerClip() performs the essential VLC -> prepared-frame display switch.
