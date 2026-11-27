@@ -1,10 +1,4 @@
 #include <JuceHeader.h>
-#if JUCE_WINDOWS
- #ifndef NOMINMAX
-  #define NOMINMAX
- #endif
- #include <windows.h>
-#endif
 #include "LibVlcPlayer.h"
 
 #include <array>
@@ -970,159 +964,6 @@ private:
 };
 
 
-#if JUCE_WINDOWS
-class AudioBridgeSource final : public juce::AudioSource, private juce::Thread
-{
-public:
-    explicit AudioBridgeSource(juce::AudioSource& source)
-        : juce::Thread("MIDI Video audio bridge"), upstream(source), fifo(2048),
-          queue(2, 2048)
-    {
-        startThread();
-    }
-
-    ~AudioBridgeSource() override { shutdown(); }
-
-    void shutdown()
-    {
-        signalThreadShouldExit();
-        waitForThreadToExit(1500);
-    }
-
-    void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override
-    {
-        currentRate.store((uint32_t) juce::jlimit(8000.0, 192000.0, sampleRate));
-        upstream.prepareToPlay(samplesPerBlockExpected, sampleRate);
-    }
-
-    void releaseResources() override { upstream.releaseResources(); }
-
-    void getNextAudioBlock(const juce::AudioSourceChannelInfo& info) override
-    {
-        upstream.getNextAudioBlock(info);
-        if (info.buffer == nullptr || info.numSamples <= 0)
-            return;
-
-        int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
-        fifo.prepareToWrite(info.numSamples, start1, size1, start2, size2);
-        copyToQueue(*info.buffer, info.startSample, start1, size1);
-        copyToQueue(*info.buffer, info.startSample + size1, start2, size2);
-        fifo.finishedWrite(size1 + size2);
-        if (clientConnected.load())
-            info.buffer->clear(info.startSample, info.numSamples);
-    }
-
-private:
-    void copyToQueue(const juce::AudioBuffer<float>& input, int inputStart,
-                     int queueStart, int count)
-    {
-        if (count <= 0) return;
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            const int sourceChannel = juce::jmin(ch, input.getNumChannels() - 1);
-            queue.copyFrom(ch, queueStart, input, sourceChannel, inputStart, count);
-        }
-    }
-
-    void run() override
-    {
-        constexpr wchar_t pipeName[] = L"\\\\.\\pipe\\MIDIVideoPlayerAudio";
-        constexpr int packetFrames = 256;
-        std::vector<float> interleaved(packetFrames * 2);
-        HANDLE pipe = INVALID_HANDLE_VALUE;
-        bool connected = false;
-        bool headerSent = false;
-
-        while (!threadShouldExit())
-        {
-            if (pipe == INVALID_HANDLE_VALUE)
-            {
-                pipe = CreateNamedPipeW(pipeName, PIPE_ACCESS_OUTBOUND,
-                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT,
-                    1, 65536, 65536, 0, nullptr);
-                if (pipe == INVALID_HANDLE_VALUE) { Thread::sleep(500); continue; }
-            }
-
-            if (!connected)
-            {
-                if (ConnectNamedPipe(pipe, nullptr))
-                    connected = true;
-                else if (GetLastError() == ERROR_PIPE_CONNECTED)
-                    connected = true;
-                else { Thread::sleep(20); continue; }
-            }
-
-            if (connected && !headerSent)
-            {
-                struct StreamHeader { uint32_t magic, sampleRate, channels, format; };
-                const StreamHeader header { 0x4D565041u, currentRate.load(), 2u, 1u };
-                DWORD written = 0;
-                if (!WriteFile(pipe, &header, sizeof(header), &written, nullptr)
-                    || written != sizeof(header))
-                {
-                    DisconnectNamedPipe(pipe); connected = false; headerSent = false;
-                    clientConnected.store(false);
-                    continue;
-                }
-                headerSent = true;
-                clientConnected.store(true);
-            }
-
-            constexpr int packetFrames = 256;
-            if (fifo.getNumReady() < packetFrames)
-            {
-                Thread::sleep(1);
-                continue;
-            }
-
-            int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
-            fifo.prepareToRead(packetFrames, start1, size1, start2, size2);
-            const int total = size1 + size2;
-            if (total != packetFrames)
-            {
-                fifo.finishedRead(total);
-                Thread::sleep(1);
-                continue;
-            }
-
-            int out = 0;
-            for (int i = 0; i < size1; ++i, ++out) {
-                interleaved[(size_t)out * 2] = queue.getSample(0, start1 + i);
-                interleaved[(size_t)out * 2 + 1] = queue.getSample(1, start1 + i);
-            }
-            for (int i = 0; i < size2; ++i, ++out) {
-                interleaved[(size_t)out * 2] = queue.getSample(0, start2 + i);
-                interleaved[(size_t)out * 2 + 1] = queue.getSample(1, start2 + i);
-            }
-
-            DWORD written = 0;
-            const DWORD bytes = (DWORD)(total * 2 * (int)sizeof(float));
-            const BOOL ok = WriteFile(pipe, interleaved.data(), bytes, &written, nullptr);
-            fifo.finishedRead(total);
-            if (!ok || written != bytes)
-            {
-                DisconnectNamedPipe(pipe);
-                connected = false;
-                headerSent = false;
-                clientConnected.store(false);
-            }
-        }
-
-        if (pipe != INVALID_HANDLE_VALUE) {
-            if (connected) DisconnectNamedPipe(pipe);
-            clientConnected.store(false);
-            CloseHandle(pipe);
-        }
-    }
-
-    juce::AudioSource& upstream;
-    juce::AbstractFifo fifo;
-    juce::AudioBuffer<float> queue;
-    std::atomic<uint32_t> currentRate { 44100 };
-    std::atomic<bool> clientConnected { false };
-};
-#endif
-
 class VideoOutputView final : public juce::Component,
                                   private juce::Timer,
                                   private juce::AsyncUpdater
@@ -1144,7 +985,8 @@ public:
 
         audioMixer.addInputSource(&audioClipSource, false);
          audioMixer.addInputSource(&timelineAudioSource, false);
-         audioSourcePlayer.setSource(&bridgeSource);
+        // Route MIDI clips and timeline audio directly to the selected JUCE hardware output.
+        audioSourcePlayer.setSource(&audioMixer);
         audioDeviceManager.addAudioCallback(&audioSourcePlayer);
         clipPlayer.setVisible(false);
 
@@ -1167,9 +1009,6 @@ public:
         sourceVideo.unload();
          audioDeviceManager.removeAudioCallback(&audioSourcePlayer);
         audioSourcePlayer.setSource(nullptr);
-#if JUCE_WINDOWS
-        bridgeSource.shutdown();
-#endif
         audioMixer.removeAllInputs();
          timelineAudioSource.releaseResources();
 
@@ -1320,7 +1159,7 @@ public:
 
     void configureAudio() {
         juce::DialogWindow::LaunchOptions options;
-        options.dialogTitle="Sortie audio vers FL Studio";
+        options.dialogTitle="Sortie audio active : " + currentAudioOutput();
         options.dialogBackgroundColour=juce::Colour(0xff050705);
         options.escapeKeyTriggersCloseButton=true;
         options.useNativeTitleBar=true;
@@ -1389,7 +1228,8 @@ private:
             releases.swap(state->pendingNoteOffs);
             fadeRelease = state->fadeOnNoteOff;
         }
-        for (int note : releases) { clipPlayer.releaseNote(note, fadeRelease); if (clipMode) audioClipSource.stop(); }
+        // Note-off releases the visual animation only. Let clip audio finish naturally.
+        for (int note : releases) clipPlayer.releaseNote(note, fadeRelease);
 
         // Route MIDI hits through triggerClip(), not directly to ClipFramePlayer.
         // triggerClip() performs the essential VLC -> prepared-frame display switch.
@@ -1418,10 +1258,7 @@ private:
     ClipAudioSource audioClipSource;
     TimelineAudioSource timelineAudioSource;
 
-    juce::MixerAudioSource audioMixer;
-#if JUCE_WINDOWS
-    AudioBridgeSource bridgeSource { audioMixer };
-#endif
+     juce::MixerAudioSource audioMixer;
      juce::AudioDeviceManager audioDeviceManager;
     juce::AudioSourcePlayer audioSourcePlayer;
 };
