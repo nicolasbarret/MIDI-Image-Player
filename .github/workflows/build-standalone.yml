@@ -1,4 +1,4 @@
-name: Build MIDI Video Player for Windows
+name: Build MIDI Player 2.0 for Windows
 # Rebuild after correcting the JUCE video playback API
 on:
   push:
@@ -16,14 +16,14 @@ jobs:
       - name: Package application, FFmpeg and VLC preview runtime
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Path "build" -Filter "MIDI Video Player.exe" -Recurse | Select-Object -First 1
-          if (-not $exe) { throw "MIDI Video Player.exe was not generated." }
+          $exe = Get-ChildItem -Path "build" -Filter "MIDI Player 2.0.exe" -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "MIDI Player 2.0.exe was not generated." }
           $router = Get-ChildItem -Path "build" -Filter "MIDI Audio Router.exe" -Recurse | Select-Object -First 1
           if (-not $router) { throw "MIDI Audio Router.exe was not generated." }
 
-          New-Item -ItemType Directory -Force -Path "package/MIDI Video Player" | Out-Null
-          Copy-Item $exe.FullName "package/MIDI Video Player/"
-          Copy-Item $router.FullName "package/MIDI Video Player/"
+          New-Item -ItemType Directory -Force -Path "package/MIDI Player 2.0" | Out-Null
+          Copy-Item $exe.FullName "package/MIDI Player 2.0/"
+          Copy-Item $router.FullName "package/MIDI Player 2.0/"
 
           # FFmpeg extracts and pre-decodes MIDI clips in the background.
           function Download-WithRetry {
@@ -45,7 +45,7 @@ jobs:
           Expand-Archive -Path $ffmpegArchive -DestinationPath "ffmpeg-extracted" -Force
           $ffmpegExe = Get-ChildItem -Path "ffmpeg-extracted" -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1
           if (-not $ffmpegExe) { throw "ffmpeg.exe was not found in the FFmpeg archive." }
-          Copy-Item (Join-Path $ffmpegExe.DirectoryName "*") "package/MIDI Video Player/" -Recurse -Force
+          Copy-Item (Join-Path $ffmpegExe.DirectoryName "*") "package/MIDI Player 2.0/" -Recurse -Force
 
           # VLC is retained only for source-video preview and marker positioning.
           # MIDI note triggers never call VLC.
@@ -54,13 +54,13 @@ jobs:
           Expand-Archive -Path $vlcArchive -DestinationPath "vlc-extracted" -Force
           $libvlc = Get-ChildItem -Path "vlc-extracted" -Filter "libvlc.dll" -Recurse | Select-Object -First 1
           if (-not $libvlc) { throw "libvlc.dll was not found in the official VLC archive." }
-          New-Item -ItemType Directory -Force -Path "package/MIDI Video Player/VLC" | Out-Null
-          Copy-Item (Join-Path $libvlc.DirectoryName "*") "package/MIDI Video Player/VLC/" -Recurse -Force
+          New-Item -ItemType Directory -Force -Path "package/MIDI Player 2.0/VLC" | Out-Null
+          Copy-Item (Join-Path $libvlc.DirectoryName "*") "package/MIDI Player 2.0/VLC/" -Recurse -Force
 
-          Compress-Archive -Path "package/MIDI Video Player" -DestinationPath "MIDI-Video-Player-Windows-x64.zip" -Force
+          Compress-Archive -Path "package/MIDI Player 2.0" -DestinationPath "MIDI-Player-2.0-Windows-x64.zip" -Force
       - uses: actions/upload-artifact@v4
         with:
-          name: MIDI-Video-Player-Windows-x64
-          path: MIDI-Video-Player-Windows-x64.zip
+          name: MIDI-Player-2.0-Windows-x64
+          path: MIDI-Player-2.0-Windows-x64.zip
           if-no-files-found: error
           retention-days: 30
