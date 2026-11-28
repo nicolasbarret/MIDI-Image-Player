@@ -67,7 +67,7 @@ public:
         g.drawRoundedRectangle(bounds, 5.0f, 1.1f);
     }
 };
-constexpr int PitchCount=12, MaxOctaves=11, MaxNotes=132;
+constexpr int PitchCount=12, MaxOctaves=11, MaxNotes=132, EffectCount=15;
 const std::array<const char*,12> notes{"Do","Do#","Ré","Ré#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"};
 static juce::String noteLabel(int i){return juce::String(notes[(size_t)(i%12)])+juce::String(3+i/12);}
 struct VideoState {
@@ -80,8 +80,8 @@ struct VideoState {
     std::deque<int> pendingNoteOffs;
     bool fadeOnNoteOff = false;
     int fadeDurationMs = 300;
-    std::array<int,8> effectCC{{-1,-1,-1,-1,-1,-1,-1,-1}};
-    std::array<float,8> effectValues{{0,0,0,0,0,0,0,0}};
+    std::array<int,EffectCount> effectCC = [] { std::array<int,EffectCount> a{}; a.fill(-1); return a; }();
+    std::array<float,EffectCount> effectValues{};
     int learnEffect = -1;
     std::function<void()> dispatchPlayback;
 };
@@ -111,7 +111,7 @@ private:
             if(m.isController()) {
                 const int cc = m.getControllerNumber();
                 const float value = (float)m.getControllerValue() / 127.0f;
-                if(state->learnEffect >= 0 && state->learnEffect < 8) {
+                if(state->learnEffect >= 0 && state->learnEffect < EffectCount) {
                     state->effectCC[(size_t)state->learnEffect] = cc;
                     state->effectValues[(size_t)state->learnEffect] = value;
                     state->learnEffect = -1;
@@ -733,7 +733,7 @@ public:
             image = currentImage;
         }
         if (image.isValid()) {
-            std::array<float,8> fx{};
+            std::array<float,EffectCount> fx{};
             {
                 const juce::ScopedLock sl(state->lock);
                 fx = state->effectValues;
@@ -750,7 +750,7 @@ public:
 private:
     static constexpr int FrameRate = 24;
 
-    juce::Image applyVideoEffects(const juce::Image& input, const std::array<float,8>& fx)
+    juce::Image applyVideoEffects(const juce::Image& input, const std::array<float,EffectCount>& fx)
     {
         bool active = false;
         for(float v : fx) if(v > 0.005f) { active = true; break; }
@@ -765,25 +765,69 @@ private:
         const int pixelBlock = 1 + (int)std::round(fx[2] * 23.0f);
         const int rgbShift = (int)std::round(fx[6] * 12.0f);
         const int glitchShift = (int)std::round(fx[1] * 48.0f);
+        const float angle = fx[9] * juce::MathConstants<float>::twoPi;
+        const float cs = std::cos(angle), sn = std::sin(angle);
+        const float zoom = 1.0f + fx[12] * 1.5f;
+        const int kaleidoSegments = 2 + (int)std::round(fx[11] * 10.0f);
+        const float kaleidoWedge = juce::MathConstants<float>::twoPi / (float)kaleidoSegments;
         for(int y=0;y<height;++y) {
             const bool scanline = (y % 3) == 0;
             const int stripOffset = (glitchShift > 0 && random.nextFloat() < fx[1] * 0.035f)
                                   ? random.nextInt(juce::Range<int>(-glitchShift,glitchShift+1)) : 0;
             for(int x=0;x<width;++x) {
-                int sx = juce::jlimit(0,width-1,((x / pixelBlock) * pixelBlock) + stripOffset);
-                int sy = juce::jlimit(0,height-1,(y / pixelBlock) * pixelBlock);
-                auto base = src.getPixelColour(sx,sy);
-                auto red = src.getPixelColour(juce::jlimit(0,width-1,sx+rgbShift),sy).getRed();
-                auto blue = src.getPixelColour(juce::jlimit(0,width-1,sx-rgbShift),sy).getBlue();
-                float r = (float)red, g = (float)base.getGreen(), b = (float)blue;
+                float nx = ((float)x + 0.5f) / (float)width - 0.5f;
+                float ny = ((float)y + 0.5f) / (float)height - 0.5f;
+                float tx = (nx * cs + ny * sn) / zoom;
+                float ty = (-nx * sn + ny * cs) / zoom;
+                if(fx[10] > 0.0f) {
+                    const float mirroredX = -tx;
+                    tx = tx * (1.0f - fx[10]) + mirroredX * fx[10];
+                }
+                if(fx[11] > 0.0f) {
+                    const float radius = std::sqrt(tx*tx + ty*ty);
+                    float theta = std::atan2(ty, tx);
+                    theta = std::fmod(theta + juce::MathConstants<float>::twoPi, kaleidoWedge);
+                    if(theta > kaleidoWedge * 0.5f) theta = kaleidoWedge - theta;
+                    tx = std::cos(theta) * radius;
+                    ty = std::sin(theta) * radius;
+                }
+                int sx = (int)std::round((tx + 0.5f) * (float)width);
+                int sy = (int)std::round((ty + 0.5f) * (float)height);
+                sx = juce::jlimit(0,width-1,((sx / pixelBlock) * pixelBlock) + stripOffset);
+                sy = juce::jlimit(0,height-1,(sy / pixelBlock) * pixelBlock);
+                const auto base = src.getPixelColour(sx,sy);
+                const int shiftedX = juce::jlimit(0,width-1,sx+rgbShift);
+                const int shiftedNegX = juce::jlimit(0,width-1,sx-rgbShift);
+                float r = (float)src.getPixelColour(shiftedX,sy).getRed();
+                float g = (float)base.getGreen();
+                float b = (float)src.getPixelColour(shiftedNegX,sy).getBlue();
                 if(fx[0] > 0.0f) {
                     const float grey = 0.299f*r + 0.587f*g + 0.114f*b;
                     r += (grey-r)*fx[0]; g += (grey-g)*fx[0]; b += (grey-b)*fx[0];
                 }
+                if(fx[8] > 0.0f) {
+                    auto colour = juce::Colour((juce::uint8)juce::jlimit(0.0f,255.0f,r),
+                                               (juce::uint8)juce::jlimit(0.0f,255.0f,g),
+                                               (juce::uint8)juce::jlimit(0.0f,255.0f,b));
+                    const float hue = std::fmod(colour.getHue() + fx[8], 1.0f);
+                    colour = juce::Colour::fromHSV(hue, colour.getSaturation(), colour.getBrightness(), 1.0f);
+                    r = (float)colour.getRed(); g = (float)colour.getGreen(); b = (float)colour.getBlue();
+                }
+                const float luminance = 0.299f*r + 0.587f*g + 0.114f*b;
+                const float saturation = 1.0f + fx[13] * 2.0f;
+                r = luminance + (r-luminance)*saturation;
+                g = luminance + (g-luminance)*saturation;
+                b = luminance + (b-luminance)*saturation;
                 const float contrast = 1.0f + fx[5] * 2.2f;
                 r = (r-127.5f)*contrast+127.5f;
                 g = (g-127.5f)*contrast+127.5f;
                 b = (b-127.5f)*contrast+127.5f;
+                if(fx[14] > 0.0f) {
+                    const float threshold = 255.0f * (0.25f + 0.5f * (1.0f-fx[14]));
+                    if(r > threshold) r = r*(1.0f-fx[14]) + (255.0f-r)*fx[14];
+                    if(g > threshold) g = g*(1.0f-fx[14]) + (255.0f-g)*fx[14];
+                    if(b > threshold) b = b*(1.0f-fx[14]) + (255.0f-b)*fx[14];
+                }
                 if(fx[7] > 0.0f) {
                     const float lineGain = scanline ? (1.0f - fx[7]*0.55f) : 1.0f;
                     const float noise = (random.nextFloat()-0.5f)*fx[7]*55.0f;
@@ -1475,10 +1519,14 @@ public:
             box->setColour(juce::ComboBox::arrowColourId,juce::Colour(0xff39ff14));
         }
         addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
-        for(int i=0;i<8;++i)
+        for(int i=0;i<EffectCount;++i)
             state->effectCC[(size_t)i] = settings->getIntValue("effectCC"+juce::String(i),-1);
-        static const char* effectNames[8] = {"Noir et blanc","Glitch visuel","Pixelisation","Saccades temporelles","Flou","Contraste","Décalage RGB","VHS / Scanlines"};
-        for(int i=0;i<8;++i) {
+        static const char* effectNames[EffectCount] = {
+            "Noir et blanc","Glitch visuel","Pixelisation","Saccades temporelles","Flou",
+            "Contraste","Décalage RGB","VHS / Scanlines","Changement de teinte","Rotation",
+            "Miroir","Kaléidoscope","Zoom","Saturation","Solarisation"
+        };
+        for(int i=0;i<EffectCount;++i) {
             addAndMakeVisible(effectNameLabels[(size_t)i]);
             addAndMakeVisible(effectLearnButtons[(size_t)i]);
             effectNameLabels[(size_t)i].setText(effectNames[i],juce::dontSendNotification);
@@ -1580,9 +1628,12 @@ public:
     }
     void setWaveformData(std::vector<float> p) { timeline.setWaveform(std::move(p)); }
     void updateEffectControlText() {
-        static const char* shortNames[8] = {"N&B","Glitch","Pixels","Stutter","Flou","Contraste","RGB","VHS"};
+        static const char* shortNames[EffectCount] = {
+            "N&B","Glitch","Pixels","Stutter","Flou","Contraste","RGB","VHS",
+            "Teinte","Rotation","Miroir","Kaleido","Zoom","Saturation","Solarisation"
+        };
         const juce::ScopedLock sl(state->lock);
-        for(int i=0;i<8;++i) {
+        for(int i=0;i<EffectCount;++i) {
             const int cc=state->effectCC[(size_t)i];
             const int percent=(int)std::round(state->effectValues[(size_t)i]*100.0f);
             effectLearnButtons[(size_t)i].setButtonText(
@@ -1622,7 +1673,7 @@ public:
         inputLabel.setBounds(controls.removeFromTop(20));inputBox.setBounds(controls.removeFromTop(28));controls.removeFromTop(5);
         outputLabel.setBounds(controls.removeFromTop(20));outputBox.setBounds(controls.removeFromTop(28));refresh.setBounds(controls.removeFromTop(30));audioOutputButton.setBounds(controls.removeFromTop(44));
         fxArea.removeFromTop(4);
-        for(int i=0;i<8;++i) {
+        for(int i=0;i<EffectCount;++i) {
             const int col=i%4, row=i/4;
             auto cell=fxArea.withX(fxArea.getX()+col*(fxArea.getWidth()/4))
                             .withY(fxArea.getY()+row*(fxArea.getHeight()/2))
@@ -1656,7 +1707,7 @@ private:
         bool effectMappingChanged=false;
         {
             const juce::ScopedLock sl(state->lock);
-            for(int i=0;i<8;++i) {
+            for(int i=0;i<EffectCount;++i) {
                 const auto key="effectCC"+juce::String(i);
                 const int cc=state->effectCC[(size_t)i];
                 if(settings->getIntValue(key,-1)!=cc) {
@@ -2060,8 +2111,8 @@ private:
     juce::String lastPreloadMessage;
     ReadableLookAndFeel readableLookAndFeel;
     juce::TextButton newProject,openProject,saveProject,saveAsProject;
-    std::array<juce::Label,8> effectNameLabels;
-    std::array<juce::TextButton,8> effectLearnButtons;
+    std::array<juce::Label,EffectCount> effectNameLabels;
+    std::array<juce::TextButton,EffectCount> effectLearnButtons;
     juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
     juce::TextButton openVideo,play,addMarker,eraseMarker,autoMarkerButton,refresh,outputButton,audioOutputButton,preloadClipButton,preloadAllButton,localMuteButton,noteReleaseButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice,detectionSensitivity,fadeDurationChoice;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
 };
