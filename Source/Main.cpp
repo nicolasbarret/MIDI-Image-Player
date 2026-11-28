@@ -791,8 +791,8 @@ private:
                     tx = std::cos(theta) * radius;
                     ty = std::sin(theta) * radius;
                 }
-                int sx = (int)std::round((tx + 0.5f) * (float)width);
-                int sy = (int)std::round((ty + 0.5f) * (float)height);
+                int sx = (int)std::round((tx + 0.5f) * (float)width - 0.5f);
+                int sy = (int)std::round((ty + 0.5f) * (float)height - 0.5f);
                 sx = juce::jlimit(0,width-1,((sx / pixelBlock) * pixelBlock) + stripOffset);
                 sy = juce::jlimit(0,height-1,(sy / pixelBlock) * pixelBlock);
                 const auto base = src.getPixelColour(sx,sy);
