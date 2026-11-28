@@ -1475,6 +1475,8 @@ public:
             box->setColour(juce::ComboBox::arrowColourId,juce::Colour(0xff39ff14));
         }
         addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
+        for(int i=0;i<8;++i)
+            state->effectCC[(size_t)i] = settings->getIntValue("effectCC"+juce::String(i),-1);
         static const char* effectNames[8] = {"Noir et blanc","Glitch visuel","Pixelisation","Saccades temporelles","Flou","Contraste","Décalage RGB","VHS / Scanlines"};
         for(int i=0;i<8;++i) {
             addAndMakeVisible(effectNameLabels[(size_t)i]);
@@ -1648,6 +1650,19 @@ private:
             if(duration>0.0 && timelineDurationNeedsUpdate(duration)){lastTimelineDuration=duration;timeline.setDuration(duration);}
             timeline.repaint();
         }
+        bool effectMappingChanged=false;
+        {
+            const juce::ScopedLock sl(state->lock);
+            for(int i=0;i<8;++i) {
+                const auto key="effectCC"+juce::String(i);
+                const int cc=state->effectCC[(size_t)i];
+                if(settings->getIntValue(key,-1)!=cc) {
+                    settings->setValue(key,cc);
+                    effectMappingChanged=true;
+                }
+            }
+        }
+        if(effectMappingChanged) settings->saveIfNeeded();
         updateEffectControlText();
         if(preloadFeedback){
             double progress = 0.0;
