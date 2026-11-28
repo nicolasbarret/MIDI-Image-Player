@@ -79,6 +79,7 @@ struct VideoState {
     std::deque<int> pendingTriggers;
     std::deque<int> pendingNoteOffs;
     bool fadeOnNoteOff = false;
+    int fadeDurationMs = 300;
     std::function<void()> dispatchPlayback;
 };
 static juce::String markerString(const std::vector<double>& v) {
@@ -370,11 +371,12 @@ public:
     void prepareToPlay(int, double rate) override { const juce::ScopedLock sl(lock); outputRate=juce::jmax(1.0,rate); position=0.0; }
     void releaseResources() override { const juce::ScopedLock sl(lock); clip.reset(); position=0.0; }
     void setClip(std::shared_ptr<juce::AudioBuffer<float>> audio,double rate) {
-        const juce::ScopedLock sl(lock); clip=std::move(audio); sourceRate=juce::jmax(1.0,rate); position=0.0; paused=false;
+        const juce::ScopedLock sl(lock); clip=std::move(audio); sourceRate=juce::jmax(1.0,rate); position=0.0; paused=false; fading=false; fadeRemainingSamples=fadeTotalSamples=0;
     }
     void pause(){const juce::ScopedLock sl(lock);paused=true;}
     void resume(){const juce::ScopedLock sl(lock);paused=false;}
-    void stop(){const juce::ScopedLock sl(lock);clip.reset();position=0.0;paused=false;}
+    void stop(){const juce::ScopedLock sl(lock);clip.reset();position=0.0;paused=false;fading=false;fadeRemainingSamples=fadeTotalSamples=0;}
+    void fadeOut(int durationMs){const juce::ScopedLock sl(lock);if(!clip)return;fadeTotalSamples=juce::jmax(1,(int)std::round(outputRate*(double)juce::jlimit(10,2000,durationMs)/1000.0));fadeRemainingSamples=fadeTotalSamples;fading=true;}
     void setMuted(bool value){const juce::ScopedLock sl(lock);muted=value;}
     void getNextAudioBlock(const juce::AudioSourceChannelInfo& info) override {
         info.clearActiveBufferRegion();
@@ -389,8 +391,10 @@ public:
             for(int ch=0;ch<outChannels;++ch) {
                 const int src=juce::jmin(ch,sourceChannels-1);
                 const float a=clip->getSample(src,index), b=clip->getSample(src,next);
-                info.buffer->addSample(ch,info.startSample+i,(a+(b-a)*frac)*(muted?0.0f:1.0f));
+                const float gain=fading?(float)fadeRemainingSamples/(float)juce::jmax(1,fadeTotalSamples):1.0f;
+                info.buffer->addSample(ch,info.startSample+i,(a+(b-a)*frac)*gain*(muted?0.0f:1.0f));
             }
+            if(fading && --fadeRemainingSamples<=0){clip.reset();position=0.0;fading=false;fadeTotalSamples=0;break;}
             position += sourceRate/outputRate;
         }
     }
@@ -400,6 +404,8 @@ private:
     double sourceRate=44100.0, outputRate=44100.0, position=0.0;
     bool paused=false;
     bool muted=false;
+    bool fading=false;
+    int fadeRemainingSamples=0,fadeTotalSamples=0;
 };
 
 class TimelineAudioSource final : public juce::AudioSource
@@ -605,11 +611,11 @@ public:
         return true;
     }
 
-    void releaseNote(int clipIndex, bool fade)
+    void releaseNote(int clipIndex, bool fade, int fadeMilliseconds)
     {
         const juce::ScopedLock sl(lock);
         if (activeClip != clipIndex) return;
-        if (fade) { fading = true; fadeStartMs = juce::Time::getMillisecondCounter(); playing = false; paused = false; }
+        if (fade) { fadeDurationMs=juce::jlimit(10,2000,fadeMilliseconds); fading = true; fadeStartMs = juce::Time::getMillisecondCounter(); playing = false; paused = false; }
         else { activeClip = -1; playing = false; paused = false; currentImage = juce::Image(); displayedFrame = -1; }
         repaint();
     }
@@ -664,7 +670,7 @@ public:
             g.drawImageWithin(image, 0, 0, getWidth(), getHeight(),
                               juce::RectanglePlacement::centred);
         float alpha = 0.0f;
-        { const juce::ScopedLock sl(lock); if (fading) alpha = juce::jlimit(0.0f, 1.0f, (float)(juce::Time::getMillisecondCounter()-fadeStartMs)/300.0f); }
+        { const juce::ScopedLock sl(lock); if (fading) alpha = juce::jlimit(0.0f, 1.0f, (float)(juce::Time::getMillisecondCounter()-fadeStartMs)/(float)juce::jmax(1,fadeDurationMs)); }
         if (alpha > 0.0f) { g.setColour(juce::Colours::black.withAlpha(alpha)); g.fillAll(); }
     }
 
@@ -676,7 +682,7 @@ private:
         bool changed = false;
         {
             const juce::ScopedLock sl(lock);
-            if (fading) { if (juce::Time::getMillisecondCounter()-fadeStartMs >= 300) { fading=false; activeClip=-1; currentImage=juce::Image(); displayedFrame=-1; changed=true; } else changed=true; }
+            if (fading) { if (juce::Time::getMillisecondCounter()-fadeStartMs >= (juce::uint32)fadeDurationMs) { fading=false; activeClip=-1; currentImage=juce::Image(); displayedFrame=-1; changed=true; } else changed=true; }
             if (activeClip < 0 || paused || !playing)
                 return;
 
@@ -715,6 +721,7 @@ private:
     bool paused = false;
     bool fading = false;
     std::uint32_t fadeStartMs = 0;
+    int fadeDurationMs=300;
     double clipDuration = 3.0;
     std::uint32_t startTimeMs = 0;
     std::uint32_t pausedElapsedMs = 0;
@@ -1242,13 +1249,18 @@ private:
     {
         std::deque<int> triggers, releases;
         bool fadeRelease = false;
+        int fadeDuration = 300;
         {
             const juce::ScopedLock sl(state->lock);
             triggers.swap(state->pendingTriggers);
             releases.swap(state->pendingNoteOffs);
             fadeRelease = state->fadeOnNoteOff;
+            fadeDuration = state->fadeDurationMs;
         }
-        for (int note : releases) { clipPlayer.releaseNote(note, fadeRelease); if (clipMode) audioClipSource.stop(); }
+        for (int note : releases) {
+            clipPlayer.releaseNote(note, fadeRelease, fadeDuration);
+            if (clipMode) { if (fadeRelease) audioClipSource.fadeOut(fadeDuration); else audioClipSource.stop(); }
+        }
 
         // Route MIDI hits through triggerClip(), not directly to ClipFramePlayer.
         // triggerClip() performs the essential VLC -> prepared-frame display switch.
@@ -1335,7 +1347,7 @@ public:
             b->setColour(juce::TextButton::textColourOffId,juce::Colour(0xfff4fff2));
             b->setColour(juce::TextButton::textColourOnId,juce::Colour(0xff39ff14));
         }
-        for(auto* box:{&noteChoice,&clipDurationChoice,&inputBox,&outputBox,&octaveChoice,&detectionSensitivity}) {
+        for(auto* box:{&noteChoice,&clipDurationChoice,&inputBox,&outputBox,&octaveChoice,&detectionSensitivity,&fadeDurationChoice}) {
             box->setColour(juce::ComboBox::backgroundColourId,juce::Colour(0xff101610));
             box->setColour(juce::ComboBox::textColourId,juce::Colour(0xfff4fff2));
             box->setColour(juce::ComboBox::outlineColourId,juce::Colour(0xff39ff14).withAlpha(0.8f));
@@ -1343,8 +1355,12 @@ public:
         }
         addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
         addAndMakeVisible(outputButton);addAndMakeVisible(audioOutputButton);
-        addAndMakeVisible(localMuteButton);addAndMakeVisible(noteReleaseButton);
+        addAndMakeVisible(localMuteButton);addAndMakeVisible(noteReleaseButton);addAndMakeVisible(fadeDurationChoice);
         state->fadeOnNoteOff=settings->getBoolValue("fadeOnNoteOff",false);
+        state->fadeDurationMs=juce::jlimit(10,2000,settings->getIntValue("fadeDurationMs",300));
+        fadeDurationChoice.addItem("Fondu 50 ms",50);fadeDurationChoice.addItem("Fondu 100 ms",100);fadeDurationChoice.addItem("Fondu 200 ms",200);fadeDurationChoice.addItem("Fondu 300 ms",300);fadeDurationChoice.addItem("Fondu 500 ms",500);fadeDurationChoice.addItem("Fondu 750 ms",750);fadeDurationChoice.addItem("Fondu 1 s",1000);fadeDurationChoice.addItem("Fondu 1,5 s",1500);
+        fadeDurationChoice.setSelectedId(state->fadeDurationMs,juce::dontSendNotification);
+        fadeDurationChoice.onChange=[this]{const int ms=fadeDurationChoice.getSelectedId();{const juce::ScopedLock sl(state->lock);state->fadeDurationMs=ms;}settings->setValue("fadeDurationMs",ms);settings->saveIfNeeded();};
         noteReleaseButton.setButtonText(state->fadeOnNoteOff ? "Relâchement : fondu" : "Relâchement : arrêt net");
         noteReleaseButton.onClick=[this]{ {const juce::ScopedLock sl(state->lock);state->fadeOnNoteOff=!state->fadeOnNoteOff;noteReleaseButton.setButtonText(state->fadeOnNoteOff ? "Relâchement : fondu" : "Relâchement : arrêt net");settings->setValue("fadeOnNoteOff",state->fadeOnNoteOff);settings->saveIfNeeded();} };
          localMuteButton.setButtonText("Mute audio désactivé");localMuteButton.setClickingTogglesState(true);
@@ -1446,7 +1462,7 @@ public:
         saveProject.setBounds(projectBar.removeFromLeft(115));projectBar.removeFromLeft(7);
         saveAsProject.setBounds(projectBar.removeFromLeft(145));
         a.removeFromTop(8);
-        auto top=a.removeFromTop(260);auto left=top.removeFromLeft(250);videoStatus.setBounds(left.removeFromTop(44));localMuteButton.setBounds(left.removeFromTop(32));noteReleaseButton.setBounds(left.removeFromTop(32));auto controls=top.reduced(12,0);
+        auto top=a.removeFromTop(260);auto left=top.removeFromLeft(250);videoStatus.setBounds(left.removeFromTop(44));localMuteButton.setBounds(left.removeFromTop(32));noteReleaseButton.setBounds(left.removeFromTop(32));fadeDurationChoice.setBounds(left.removeFromTop(32));auto controls=top.reduced(12,0);
         openVideo.setBounds(controls.removeFromTop(36));controls.removeFromTop(8);play.setBounds(controls.removeFromTop(34));controls.removeFromTop(8);
         inputLabel.setBounds(controls.removeFromTop(20));inputBox.setBounds(controls.removeFromTop(28));controls.removeFromTop(5);
         outputLabel.setBounds(controls.removeFromTop(20));outputBox.setBounds(controls.removeFromTop(28));refresh.setBounds(controls.removeFromTop(30));audioOutputButton.setBounds(controls.removeFromTop(44));
@@ -1865,7 +1881,7 @@ private:
     ReadableLookAndFeel readableLookAndFeel;
     juce::TextButton newProject,openProject,saveProject,saveAsProject;
     juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
-    juce::TextButton openVideo,play,addMarker,eraseMarker,autoMarkerButton,refresh,outputButton,audioOutputButton,preloadClipButton,preloadAllButton,localMuteButton,noteReleaseButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice,detectionSensitivity;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
+    juce::TextButton openVideo,play,addMarker,eraseMarker,autoMarkerButton,refresh,outputButton,audioOutputButton,preloadClipButton,preloadAllButton,localMuteButton,noteReleaseButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice,detectionSensitivity,fadeDurationChoice;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
 };
 
 class MainWindow final : public juce::DocumentWindow {
