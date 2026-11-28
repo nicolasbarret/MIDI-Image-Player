@@ -80,6 +80,9 @@ struct VideoState {
     std::deque<int> pendingNoteOffs;
     bool fadeOnNoteOff = false;
     int fadeDurationMs = 300;
+    std::array<int,8> effectCC{{-1,-1,-1,-1,-1,-1,-1,-1}};
+    std::array<float,8> effectValues{{0,0,0,0,0,0,0,0}};
+    int learnEffect = -1;
     std::function<void()> dispatchPlayback;
 };
 static juce::String markerString(const std::vector<double>& v) {
@@ -105,6 +108,22 @@ private:
         std::function<void()> notify;
         {
             const juce::ScopedLock sl(state->lock);
+            if(m.isController()) {
+                const int cc = m.getControllerNumber();
+                const float value = (float)m.getControllerValue() / 127.0f;
+                if(state->learnEffect >= 0 && state->learnEffect < 8) {
+                    state->effectCC[(size_t)state->learnEffect] = cc;
+                    state->effectValues[(size_t)state->learnEffect] = value;
+                    state->learnEffect = -1;
+                    dispatch = true;
+                } else {
+                    for(size_t i=0;i<state->effectCC.size();++i)
+                        if(state->effectCC[i] == cc) {
+                            state->effectValues[i] = value;
+                            dispatch = true;
+                        }
+                }
+            }
             if(m.isNoteOff()) {
                 const int clipIndex=m.getNoteNumber()-48;
                 if(clipIndex>=0 && clipIndex<state->octaveCount*PitchCount) {
@@ -561,7 +580,7 @@ private:
 class ClipFramePlayer final : public juce::Component, private juce::Timer
 {
 public:
-    ClipFramePlayer()
+    explicit ClipFramePlayer(std::shared_ptr<VideoState> s) : state(std::move(s))
     {
         setOpaque(true);
         startTimerHz(FrameRate);
@@ -713,9 +732,16 @@ public:
             const juce::ScopedLock sl(lock);
             image = currentImage;
         }
-        if (image.isValid())
+        if (image.isValid()) {
+            std::array<float,8> fx{};
+            {
+                const juce::ScopedLock sl(state->lock);
+                fx = state->effectValues;
+            }
+            image = applyVideoEffects(image, fx);
             g.drawImageWithin(image, 0, 0, getWidth(), getHeight(),
                               juce::RectanglePlacement::centred);
+        }
         float alpha = 0.0f;
         { const juce::ScopedLock sl(lock); if (fading) alpha = juce::jlimit(0.0f, 1.0f, (float)(juce::Time::getMillisecondCounter()-fadeStartMs)/(float)juce::jmax(1,fadeDurationMs)); }
         if (alpha > 0.0f) { g.setColour(juce::Colours::black.withAlpha(alpha)); g.fillAll(); }
@@ -723,6 +749,59 @@ public:
 
 private:
     static constexpr int FrameRate = 24;
+
+    juce::Image applyVideoEffects(const juce::Image& input, const std::array<float,8>& fx)
+    {
+        bool active = false;
+        for(float v : fx) if(v > 0.005f) { active = true; break; }
+        if(!active || !input.isValid()) return input;
+
+        juce::Image source = input;
+        const int width = source.getWidth(), height = source.getHeight();
+        juce::Image output(juce::Image::ARGB, width, height, true);
+        juce::Image::BitmapData src(source, juce::Image::BitmapData::readOnly);
+        juce::Image::BitmapData dst(output, juce::Image::BitmapData::writeOnly);
+        juce::Random random((juce::int64)juce::Time::getMillisecondCounter() + (juce::int64)displayedFrame * 7919);
+        const int pixelBlock = 1 + (int)std::round(fx[2] * 23.0f);
+        const int rgbShift = (int)std::round(fx[6] * 12.0f);
+        const int glitchShift = (int)std::round(fx[1] * 48.0f);
+        for(int y=0;y<height;++y) {
+            const bool scanline = (y % 3) == 0;
+            const int stripOffset = (glitchShift > 0 && random.nextFloat() < fx[1] * 0.035f)
+                                  ? random.nextInt(juce::Range<int>(-glitchShift,glitchShift+1)) : 0;
+            for(int x=0;x<width;++x) {
+                int sx = juce::jlimit(0,width-1,((x / pixelBlock) * pixelBlock) + stripOffset);
+                int sy = juce::jlimit(0,height-1,(y / pixelBlock) * pixelBlock);
+                auto base = src.getPixelColour(sx,sy);
+                auto red = src.getPixelColour(juce::jlimit(0,width-1,sx+rgbShift),sy).getRed();
+                auto blue = src.getPixelColour(juce::jlimit(0,width-1,sx-rgbShift),sy).getBlue();
+                float r = (float)red, g = (float)base.getGreen(), b = (float)blue;
+                if(fx[0] > 0.0f) {
+                    const float grey = 0.299f*r + 0.587f*g + 0.114f*b;
+                    r += (grey-r)*fx[0]; g += (grey-g)*fx[0]; b += (grey-b)*fx[0];
+                }
+                const float contrast = 1.0f + fx[5] * 2.2f;
+                r = (r-127.5f)*contrast+127.5f;
+                g = (g-127.5f)*contrast+127.5f;
+                b = (b-127.5f)*contrast+127.5f;
+                if(fx[7] > 0.0f) {
+                    const float lineGain = scanline ? (1.0f - fx[7]*0.55f) : 1.0f;
+                    const float noise = (random.nextFloat()-0.5f)*fx[7]*55.0f;
+                    r = r*lineGain+noise; g = g*lineGain+noise; b = b*lineGain+noise;
+                }
+                dst.setPixelColour(x,y,juce::Colour((juce::uint8)juce::jlimit(0.0f,255.0f,r),
+                    (juce::uint8)juce::jlimit(0.0f,255.0f,g),
+                    (juce::uint8)juce::jlimit(0.0f,255.0f,b),base.getAlpha()));
+            }
+        }
+        if(fx[4] > 0.01f) {
+            const int reduction = juce::jlimit(1,8,1+(int)std::round(fx[4]*7.0f));
+            auto softened = output.rescaled(juce::jmax(1,width/reduction),juce::jmax(1,height/reduction),
+                                            juce::Graphics::ResamplingQuality::medium);
+            output = softened.rescaled(width,height,juce::Graphics::ResamplingQuality::medium);
+        }
+        return output;
+    }
 
     void timerCallback() override
     {
@@ -735,8 +814,12 @@ private:
                 const auto& clip = clips[(size_t) activeClip];
                 if (!clip.frames.empty()) {
                     const auto elapsedMs = juce::Time::getMillisecondCounter() - startTimeMs;
-                    const int wanted = juce::jlimit(0, (int) clip.frames.size() - 1,
+                    int wanted = juce::jlimit(0, (int) clip.frames.size() - 1,
                         (int) ((double) elapsedMs * FrameRate / 1000.0));
+                    float stutter = 0.0f;
+                    { const juce::ScopedLock effectLock(state->lock); stutter = state->effectValues[3]; }
+                    const int frameStep = 1 + (int)std::round(stutter * 9.0f);
+                    wanted = (wanted / frameStep) * frameStep;
                     if (wanted < (int) clip.frames.size() && wanted != displayedFrame) {
                         const auto& next = clip.frames[(size_t) wanted];
                         if (next.isValid()) { currentImage = next; displayedFrame = wanted; changed = true; }
@@ -749,6 +832,7 @@ private:
             repaint();
     }
 
+    std::shared_ptr<VideoState> state;
     mutable juce::CriticalSection lock;
     PreparedClipArray clips;
     juce::Image currentImage;
@@ -1034,7 +1118,7 @@ class VideoOutputView final : public juce::Component,
 {
 public:
     explicit VideoOutputView(std::shared_ptr<VideoState> s)
-        : state(std::move(s))
+        : state(std::move(s)), clipPlayer(state)
     {
         addAndMakeVisible(sourceVideo);
         addAndMakeVisible(clipPlayer);
@@ -1391,6 +1475,20 @@ public:
             box->setColour(juce::ComboBox::arrowColourId,juce::Colour(0xff39ff14));
         }
         addAndMakeVisible(inputLabel);addAndMakeVisible(outputLabel);addAndMakeVisible(inputBox);addAndMakeVisible(outputBox);addAndMakeVisible(refresh);
+        static const char* effectNames[8] = {"Noir et blanc","Glitch visuel","Pixelisation","Saccades temporelles","Flou","Contraste","Décalage RGB","VHS / Scanlines"};
+        for(int i=0;i<8;++i) {
+            addAndMakeVisible(effectNameLabels[(size_t)i]);
+            addAndMakeVisible(effectLearnButtons[(size_t)i]);
+            effectNameLabels[(size_t)i].setText(effectNames[i],juce::dontSendNotification);
+            effectNameLabels[(size_t)i].setColour(juce::Label::textColourId,juce::Colour(0xffd8ffd1));
+            effectLearnButtons[(size_t)i].setButtonText("Apprendre MIDI");
+            effectLearnButtons[(size_t)i].onClick=[this,i] {
+                { const juce::ScopedLock sl(state->lock); state->learnEffect=i; }
+                updateEffectControlText();
+                videoStatus.setText("Tourne le potentiomètre choisi sur le Oxygen Pro 61 pour l'associer à cet effet.",juce::dontSendNotification);
+            };
+        }
+        updateEffectControlText();
         addAndMakeVisible(outputButton);addAndMakeVisible(audioOutputButton);
         addAndMakeVisible(localMuteButton);addAndMakeVisible(noteReleaseButton);addAndMakeVisible(fadeDurationChoice);
         state->fadeOnNoteOff=settings->getBoolValue("fadeOnNoteOff",false);
@@ -1470,12 +1568,24 @@ public:
         g.fillAll(juce::Colour(0xff050705));
         g.setColour(juce::Colour(0xff39ff14));
         g.setFont(ReadableLookAndFeel::uiFont(22.0f, juce::Font::bold));
-        g.drawText("MIDI PLAYER 2.0",24,12,getWidth()-48,30,juce::Justification::centredLeft);
+        g.drawText("MIDI PLAYER 3.0",24,12,getWidth()-48,30,juce::Justification::centredLeft);
         g.setColour(juce::Colour(0xfff4fff2));
         g.setFont(ReadableLookAndFeel::uiFont(13.0f));
         g.drawText("Départ Do3 | Les notes sont affichées à gauche de chaque piste. Teste un marqueur avant de le précharger.",24,42,getWidth()-48,22,juce::Justification::centredLeft);
     }
     void setWaveformData(std::vector<float> p) { timeline.setWaveform(std::move(p)); }
+    void updateEffectControlText() {
+        static const char* shortNames[8] = {"N&B","Glitch","Pixels","Stutter","Flou","Contraste","RGB","VHS"};
+        const juce::ScopedLock sl(state->lock);
+        for(int i=0;i<8;++i) {
+            const int cc=state->effectCC[(size_t)i];
+            const int percent=(int)std::round(state->effectValues[(size_t)i]*100.0f);
+            effectLearnButtons[(size_t)i].setButtonText(
+                (state->learnEffect==i ? "Tourne un pot..." : "CC "+(cc<0?juce::String("--"):juce::String(cc))
+                 +"  |  "+juce::String(percent)+"%"));
+            effectNameLabels[(size_t)i].setText(shortNames[i]+"  "+juce::String(percent)+"%",juce::dontSendNotification);
+        }
+    }
 
     void changeOctaveCount(int count) {
         count=juce::jlimit(1,MaxOctaves,count);
@@ -1500,10 +1610,21 @@ public:
         saveProject.setBounds(projectBar.removeFromLeft(115));projectBar.removeFromLeft(7);
         saveAsProject.setBounds(projectBar.removeFromLeft(145));
         a.removeFromTop(8);
-        auto top=a.removeFromTop(260);auto left=top.removeFromLeft(250);videoStatus.setBounds(left.removeFromTop(44));localMuteButton.setBounds(left.removeFromTop(32));noteReleaseButton.setBounds(left.removeFromTop(32));fadeDurationChoice.setBounds(left.removeFromTop(32));auto controls=top.reduced(12,0);
+        auto top=a.removeFromTop(260);
+        auto fxArea=top.removeFromRight(760).reduced(8);
+        auto left=top.removeFromLeft(250);videoStatus.setBounds(left.removeFromTop(44));localMuteButton.setBounds(left.removeFromTop(32));noteReleaseButton.setBounds(left.removeFromTop(32));fadeDurationChoice.setBounds(left.removeFromTop(32));auto controls=top.reduced(12,0);
         openVideo.setBounds(controls.removeFromTop(36));controls.removeFromTop(8);play.setBounds(controls.removeFromTop(34));controls.removeFromTop(8);
         inputLabel.setBounds(controls.removeFromTop(20));inputBox.setBounds(controls.removeFromTop(28));controls.removeFromTop(5);
         outputLabel.setBounds(controls.removeFromTop(20));outputBox.setBounds(controls.removeFromTop(28));refresh.setBounds(controls.removeFromTop(30));audioOutputButton.setBounds(controls.removeFromTop(44));
+        fxArea.removeFromTop(4);
+        for(int i=0;i<8;++i) {
+            const int col=i%4, row=i/4;
+            auto cell=fxArea.withX(fxArea.getX()+col*(fxArea.getWidth()/4))
+                            .withY(fxArea.getY()+row*(fxArea.getHeight()/2))
+                            .withWidth(fxArea.getWidth()/4-6).withHeight(fxArea.getHeight()/2-6);
+            effectNameLabels[(size_t)i].setBounds(cell.removeFromTop(28));
+            effectLearnButtons[(size_t)i].setBounds(cell.removeFromTop(34));
+        }
         a.removeFromTop(8);auto timelineHead=a.removeFromTop(32);addMarker.setBounds(timelineHead.removeFromLeft(220));timelineHead.removeFromLeft(8);eraseMarker.setBounds(timelineHead.removeFromLeft(160));timelineHead.removeFromLeft(8);autoMarkerButton.setBounds(timelineHead.removeFromLeft(170));timelineHead.removeFromLeft(6);detectionSensitivity.setBounds(timelineHead.removeFromLeft(105));timelineHead.removeFromLeft(8);noteChoice.setBounds(timelineHead.removeFromLeft(90));timelineHead.removeFromLeft(6);octaveChoice.setBounds(timelineHead.removeFromLeft(90));timelineHead.removeFromLeft(6);clipDurationChoice.setBounds(timelineHead.removeFromLeft(95));timelineHead.removeFromLeft(8);preloadClipButton.setBounds(timelineHead.removeFromLeft(190));timelineHead.removeFromLeft(6);preloadAllButton.setBounds(timelineHead.removeFromLeft(190));
         a.removeFromTop(5);auto preloadRow=a.removeFromTop(24);preloadProgressBar.setBounds(preloadRow.removeFromLeft(250));preloadRow.removeFromLeft(10);preloadStatusLabel.setBounds(preloadRow);
         timelineViewport.setBounds(a.removeFromTop(juce::jmax(240,a.getHeight()-48)));timeline.setSize(timelineViewport.getWidth(),timeline.requiredHeight());a.removeFromTop(8);
@@ -1527,6 +1648,7 @@ private:
             if(duration>0.0 && timelineDurationNeedsUpdate(duration)){lastTimelineDuration=duration;timeline.setDuration(duration);}
             timeline.repaint();
         }
+        updateEffectControlText();
         if(preloadFeedback){
             double progress = 0.0;
             bool running = false;
@@ -1919,19 +2041,21 @@ private:
     juce::String lastPreloadMessage;
     ReadableLookAndFeel readableLookAndFeel;
     juce::TextButton newProject,openProject,saveProject,saveAsProject;
+    std::array<juce::Label,8> effectNameLabels;
+    std::array<juce::TextButton,8> effectLearnButtons;
     juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
     juce::TextButton openVideo,play,addMarker,eraseMarker,autoMarkerButton,refresh,outputButton,audioOutputButton,preloadClipButton,preloadAllButton,localMuteButton,noteReleaseButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice,detectionSensitivity,fadeDurationChoice;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
 };
 
 class MainWindow final : public juce::DocumentWindow {
 public:
-    MainWindow():DocumentWindow("MIDI Player 2.0",juce::Colour(0xff050705),allButtons){setUsingNativeTitleBar(true);setContentOwned(new MainView(),true);setResizable(true,true);if(auto* display=juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())setBounds(display->userArea);else centreWithSize(1920,1080);}
+    MainWindow():DocumentWindow("MIDI Player 3.0",juce::Colour(0xff050705),allButtons){setUsingNativeTitleBar(true);setContentOwned(new MainView(),true);setResizable(true,true);if(auto* display=juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())setBounds(display->userArea);else centreWithSize(1920,1080);}
     void closeButtonPressed() override {juce::JUCEApplication::getInstance()->systemRequestedQuit();}
 };
 class App final : public juce::JUCEApplication {
 public:
-    const juce::String getApplicationName() override{return "MIDI Player 2.0";}
-    const juce::String getApplicationVersion() override{return "2.0.0";}
+    const juce::String getApplicationName() override{return "MIDI Player 3.0";}
+    const juce::String getApplicationVersion() override{return "3.0.0";}
     bool moreThanOneInstanceAllowed() override{return false;}
     void initialise(const juce::String&) override {window=std::make_unique<MainWindow>();window->setVisible(true);window->toFront(true);}
     void shutdown() override {window.reset();}
