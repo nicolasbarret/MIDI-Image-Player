@@ -67,7 +67,7 @@ public:
         g.drawRoundedRectangle(bounds, 5.0f, 1.1f);
     }
 };
-constexpr int PitchCount=12, MaxOctaves=4, MaxNotes=48;
+constexpr int PitchCount=12, MaxOctaves=11, MaxNotes=132;
 const std::array<const char*,12> notes{"Do","Do#","Ré","Ré#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"};
 static juce::String noteLabel(int i){return juce::String(notes[(size_t)(i%12)])+juce::String(3+i/12);}
 struct VideoState {
@@ -615,8 +615,7 @@ public:
     {
         const juce::ScopedLock sl(lock);
         if (activeClip != clipIndex) return;
-        if (fade) { fadeDurationMs=juce::jlimit(10,2000,fadeMilliseconds); fading = true; fadeStartMs = juce::Time::getMillisecondCounter(); playing = false; paused = false; }
-        else { activeClip = -1; playing = false; paused = false; currentImage = juce::Image(); displayedFrame = -1; }
+        activeClip = -1; playing = false; paused = false; fading = false; currentImage = juce::Image(); displayedFrame = -1;
         repaint();
     }
 
@@ -1375,7 +1374,7 @@ public:
         eraseMarker.setButtonText("Gomme désactivée");eraseMarker.setClickingTogglesState(true);eraseMarker.onClick=[this]{bool on=eraseMarker.getToggleState();eraseMarker.setButtonText(on?"Gomme activée : cliquer un repère":"Gomme désactivée");timeline.setEraseMode(on);};
         rebuildNoteChoice();
         noteChoice.setSelectedId(1,juce::dontSendNotification);
-        octaveChoice.addItem("1 octave",1);octaveChoice.addItem("2 octaves",2);octaveChoice.addItem("3 octaves",3);octaveChoice.addItem("4 octaves",4);
+        for(int octaves=1;octaves<=MaxOctaves;++octaves) octaveChoice.addItem(juce::String(octaves)+" octave"+(octaves==1?"":"s"),octaves);
         octaveChoice.setSelectedId(state->octaveCount);
         octaveChoice.onChange=[this]{changeOctaveCount(octaveChoice.getSelectedId());};
         for(int seconds=1;seconds<=8;++seconds)
