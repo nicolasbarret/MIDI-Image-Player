@@ -195,7 +195,7 @@ public:
                 const float h=juce::jlimit(1.0f,half,peak*half);
                 g.drawVerticalLine((int)(left+px),mid-h,mid+h);
             }
-        }        } else {
+        } else {
             g.setColour(juce::Colours::white.withAlpha(0.45f));
             g.drawText("Forme d'onde audio en attente", (int)left,(int)waveY,(int)(r.getWidth()-left-right),(int)waveH,juce::Justification::centred);
         }
@@ -1335,7 +1335,7 @@ public:
             b->setColour(juce::TextButton::textColourOffId,juce::Colour(0xfff4fff2));
             b->setColour(juce::TextButton::textColourOnId,juce::Colour(0xff39ff14));
         }
-        for(auto* box:{&noteChoice,&clipDurationChoice,&inputBox,&outputBox,&octaveChoice}) {
+        for(auto* box:{&noteChoice,&clipDurationChoice,&inputBox,&outputBox,&octaveChoice,&detectionSensitivity}) {
             box->setColour(juce::ComboBox::backgroundColourId,juce::Colour(0xff101610));
             box->setColour(juce::ComboBox::textColourId,juce::Colour(0xfff4fff2));
             box->setColour(juce::ComboBox::outlineColourId,juce::Colour(0xff39ff14).withAlpha(0.8f));
