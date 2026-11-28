@@ -590,7 +590,7 @@ public:
     {
         const juce::ScopedLock sl(lock);
         clips = std::move(incoming);
-        clipDuration = juce::jlimit(1.0, 8.0, secondsPerClip);
+        clipDuration = juce::jlimit(0.2, 8.0, secondsPerClip);
         activeClip = -1;
         playing = false;
         paused = false;
@@ -605,7 +605,7 @@ public:
             return;
         const juce::ScopedLock sl(lock);
         clips[(size_t) index] = std::move(clip);
-        clipDuration = juce::jlimit(1.0, 8.0, secondsPerClip);
+        clipDuration = juce::jlimit(0.2, 8.0, secondsPerClip);
         if (activeClip == index)
         {
             activeClip = -1;
@@ -870,7 +870,7 @@ public:
           source(std::move(sourceFile)),
           noteIndex(juce::jlimit(0, MaxNotes-1, note)),
           markerStart(juce::jmax(0.0, startSeconds)),
-          clipDuration(juce::jlimit(1.0, 8.0, secondsPerClip)),
+          clipDuration(juce::jlimit(0.2, 8.0, secondsPerClip)),
           feedback(std::move(feedbackState)),
           callback(std::move(finished))
     {
@@ -1283,7 +1283,7 @@ public:
 
         audioClipSource.setMuted(muted);
         timelineAudioSource.setMuted(muted);
-    }    void setPreviewDuration(double seconds) { clipPreviewDuration = juce::jlimit(1.0, 8.0, seconds); }
+    }    void setPreviewDuration(double seconds) { clipPreviewDuration = juce::jlimit(0.2, 8.0, seconds); }
 
     juce::StringArray availableAudioOutputs() const {
         juce::StringArray names;
@@ -1451,7 +1451,7 @@ public:
         juce::PropertiesFile::Options o;o.applicationName="MIDI Video Player";o.filenameSuffix="settings";o.folderName="MIDI Video Player";
         settings=std::make_unique<juce::PropertiesFile>(o);
         auto path=settings->getValue("video");
-        clipDuration = juce::jlimit(1.0, 8.0, settings->getDoubleValue("clipDuration", 2.0));
+        clipDuration = juce::jlimit(0.2, 8.0, settings->getDoubleValue("clipDuration", 2.0));
         for(int i=0;i<MaxNotes;++i){auto key="markers"+juce::String(i);state->markers[(size_t)i]=parseMarkers(settings->getValue(key));}
         state->octaveCount=juce::jlimit(1,MaxOctaves,settings->getIntValue("octaveCount",1));
         timelineViewport.setViewedComponent(&timeline,false); timeline.refreshHeight(); addAndMakeVisible(timelineViewport); videoStatus.setColour(juce::Label::textColourId,juce::Colour(0xff39ff14));videoStatus.setText("Aucune vidéo chargée",juce::dontSendNotification);
@@ -1515,11 +1515,14 @@ public:
         for(int octaves=1;octaves<=MaxOctaves;++octaves) octaveChoice.addItem(juce::String(octaves)+" octave"+(octaves==1?"":"s"),octaves);
         octaveChoice.setSelectedId(state->octaveCount);
         octaveChoice.onChange=[this]{changeOctaveCount(octaveChoice.getSelectedId());};
+        // Short clip lengths are useful for fast, percussive MIDI-triggered visuals.
+        clipDurationChoice.addItem("Clip 0.2 s", 20);
+        clipDurationChoice.addItem("Clip 0.5 s", 50);
         for(int seconds=1;seconds<=8;++seconds)
-            clipDurationChoice.addItem("Clip " + juce::String(seconds) + " s", seconds);
-        clipDurationChoice.setSelectedId((int) clipDuration, juce::dontSendNotification);
+            clipDurationChoice.addItem("Clip " + juce::String(seconds) + " s", seconds * 100);
+        clipDurationChoice.setSelectedId(juce::roundToInt(clipDuration * 100.0), juce::dontSendNotification);
         clipDurationChoice.onChange=[this]{
-            clipDuration = (double) clipDurationChoice.getSelectedId();
+            clipDuration = (double) clipDurationChoice.getSelectedId() / 100.0;
             if(outputWindow) outputWindow->setPreviewDuration(clipDuration);
             settings->setValue("clipDuration", clipDuration);
             settings->saveIfNeeded();
@@ -1958,9 +1961,10 @@ private:
         auto* obj=data.getDynamicObject();auto markers=obj->getProperty("markers");
         const double savedClipDuration = obj->hasProperty("clipDuration")
                                            ? (double) obj->getProperty("clipDuration") : 2.0;
-        clipDuration = juce::jlimit(1.0, 8.0, savedClipDuration);
-        if (clipDurationChoice.getSelectedId() != (int) clipDuration)
-            clipDurationChoice.setSelectedId((int) clipDuration, juce::dontSendNotification);
+        clipDuration = juce::jlimit(0.2, 8.0, savedClipDuration);
+        const int savedDurationId = juce::roundToInt(clipDuration * 100.0);
+        if (clipDurationChoice.getSelectedId() != savedDurationId)
+            clipDurationChoice.setSelectedId(savedDurationId, juce::dontSendNotification);
         settings->setValue("clipDuration", clipDuration);
         juce::String videoPath;
         {
