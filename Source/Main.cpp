@@ -151,7 +151,7 @@ public:
     bool selectingAnalysis=false;
     void setAnalysisRange(double a,double b){analysisStart=juce::jlimit(0.0,duration,a);analysisEnd=juce::jlimit(0.0,duration,b);if(analysisEnd<analysisStart)std::swap(analysisStart,analysisEnd);repaint();}
     std::pair<double,double> getAnalysisRange() const {return {analysisStart,analysisEnd<0.0?duration:analysisEnd};}
-    void setDuration(double d){duration=juce::jmax(0.01,d);viewStart=juce::jlimit(0.0,juce::jmax(0.0,d-visibleDuration()),viewStart);repaint();}
+    void setDuration(double d){duration=juce::jmax(0.01,d);analysisStart=0.0;analysisEnd=-1.0;selectingAnalysis=false;viewStart=juce::jlimit(0.0,juce::jmax(0.0,d-visibleDuration()),viewStart);repaint();}
     int requiredHeight() const { int n=1; { const juce::ScopedLock sl(state->lock); n=state->octaveCount*PitchCount; } return 25+n*22+118; }
     void refreshHeight(){setSize(getWidth(),requiredHeight());repaint();}
     void setWaveform(std::vector<float> peaks){waveform=std::move(peaks);repaint();}
@@ -184,6 +184,15 @@ public:
         const float waveY=top+trackArea+5.0f;
         g.setColour(juce::Colour(0xff090d09));
         g.fillRoundedRectangle(left,waveY,r.getWidth()-left-right,waveH-2.0f,4.0f);
+        if(analysisEnd>=0.0) {
+            const float x1=timeToX(analysisStart,left,r.getWidth()-left-right);
+            const float x2=timeToX(analysisEnd,left,r.getWidth()-left-right);
+            g.setColour(juce::Colour(0xff39ff14).withAlpha(0.18f));
+            g.fillRect(juce::Rectangle<float>(juce::jmin(x1,x2),waveY, std::abs(x2-x1),waveH-2.0f));
+            g.setColour(juce::Colour(0xffb8ffad).withAlpha(0.95f));
+            g.drawVerticalLine((int)x1,waveY,waveY+waveH-2.0f);
+            g.drawVerticalLine((int)x2,waveY,waveY+waveH-2.0f);
+        }
         g.setColour(juce::Colour(0xff39ff14).withAlpha(0.92f));
         if(!waveform.empty()) {
             const float mid=waveY+(waveH-2.0f)*0.5f;
@@ -218,6 +227,14 @@ public:
         float x=e.position.x; double clicked=xToTime(x,left,r.getWidth()-left-right);
         if(e.position.y>=top+trackArea) {
             clicked=juce::jlimit(0.0,duration,clicked);
+            if(e.mods.isShiftDown()) {
+                selectingAnalysis=true;
+                analysisStart=clicked;
+                analysisEnd=clicked;
+                repaint();
+                return;
+            }
+            clicked=juce::jlimit(0.0,duration,clicked);
             {const juce::ScopedLock sl(state->lock);state->playhead=clicked;}
             if(seeked)seeked(clicked);
             repaint();
@@ -242,8 +259,14 @@ public:
         if(dragIndex>=0){dragging=true;moveMarker(clicked);} else {dragging=false;{const juce::ScopedLock sl(state->lock);state->playhead=juce::jlimit(0.0,duration,clicked);}if(seeked)seeked(clicked);repaint();}
     }
     void mouseDrag(const juce::MouseEvent& e) override {
+        auto r=getLocalBounds().toFloat();
+        if(selectingAnalysis) {
+            analysisEnd=xToTime(e.position.x,78.0f,r.getWidth()-90.0f);
+            repaint();
+            return;
+        }
         if(!dragging)return;
-        auto r=getLocalBounds().toFloat();double t=xToTime(e.position.x,78.0f,r.getWidth()-90.0f);moveMarker(t);
+        double t=xToTime(e.position.x,78.0f,r.getWidth()-90.0f);moveMarker(t);
     }
     void mouseWheelMove(const juce::MouseEvent& e,const juce::MouseWheelDetails& wheel) override {
         const float left=78.0f, right=12.0f;
@@ -261,6 +284,14 @@ public:
     }
     void mouseDoubleClick(const juce::MouseEvent&) override { zoom=1.0;viewStart=0.0;repaint(); }
     void mouseUp(const juce::MouseEvent&) override {
+        if(selectingAnalysis) {
+            selectingAnalysis=false;
+            if(std::abs(analysisEnd-analysisStart)<0.02) analysisEnd=-1.0;
+            else if(analysisEnd<analysisStart) std::swap(analysisStart,analysisEnd);
+            if(analysisRangeChanged && analysisEnd>=0.0) analysisRangeChanged(analysisStart,analysisEnd);
+            repaint();
+            return;
+        }
         const bool markerWasDragged = dragging && dragRow >= 0 && dragIndex >= 0;
         if(markerWasDragged){
             const juce::ScopedLock sl(state->lock);
@@ -288,8 +319,8 @@ private:
 
 class WaveformJob final : public juce::ThreadPoolJob {
 public:
-    WaveformJob(juce::File f,int detectionSensitivity,std::function<void(std::vector<float>,std::vector<double>,juce::File)> cb)
-        : ThreadPoolJob("Audio waveform and transient detection"),source(std::move(f)),sensitivity(juce::jlimit(1,3,detectionSensitivity)),callback(std::move(cb)) {}
+    WaveformJob(juce::File f,int detectionSensitivity,double rangeStart,double rangeEnd,std::function<void(std::vector<float>,std::vector<double>,juce::File)> cb)
+        : ThreadPoolJob("Audio waveform and transient detection"),source(std::move(f)),sensitivity(juce::jlimit(1,3,detectionSensitivity)),analysisStart(juce::jmax(0.0,rangeStart)),analysisEnd(juce::jmax(rangeStart,rangeEnd)),callback(std::move(cb)) {}
     JobStatus runJob() override {
         constexpr int WaveformBins=180000,AnalysisSamples=441;
         std::vector<float> peaks(WaveformBins,0.0f),envelope;
@@ -343,6 +374,7 @@ public:
                 for(size_t j=1;j<=lookback;++j)previous+=envelope[i-j];
                 if(lookback>0)previous/=(float)lookback;
                 float level=envelope[i];double time=(double)i*0.01;
+                if(time<analysisStart || time>analysisEnd) continue;
                 float threshold=juce::jmax(maximum*relativeFloor,previous*riseRatio);
                 if(level>=threshold&&level>previous+maximum*0.018f&&time-lastOnset>=minimumGap){
                     onsets.push_back(time);lastOnset=time;if(onsets.size()>=256)break;
@@ -358,7 +390,7 @@ public:
         return jobHasFinished;
     }
 private:
-    juce::File source;int sensitivity=2;
+    juce::File source;int sensitivity=2;double analysisStart=0.0,analysisEnd=std::numeric_limits<double>::max();
     std::function<void(std::vector<float>,std::vector<double>,juce::File)> callback;
 };
 
@@ -620,7 +652,18 @@ public:
     {
         const juce::ScopedLock sl(lock);
         if (activeClip != clipIndex) return;
-        activeClip = -1; playing = false; paused = false; fading = false; currentImage = juce::Image(); displayedFrame = -1;
+        playing = false;
+        paused = false;
+        if(fade && currentImage.isValid()) {
+            fading = true;
+            fadeStartMs = juce::Time::getMillisecondCounter();
+            fadeDurationMs = juce::jlimit(10,2000,fadeMilliseconds);
+        } else {
+            activeClip = -1;
+            fading = false;
+            currentImage = juce::Image();
+            displayedFrame = -1;
+        }
         repaint();
     }
 
@@ -687,30 +730,20 @@ private:
         {
             const juce::ScopedLock sl(lock);
             if (fading) { if (juce::Time::getMillisecondCounter()-fadeStartMs >= (juce::uint32)fadeDurationMs) { fading=false; activeClip=-1; currentImage=juce::Image(); displayedFrame=-1; changed=true; } else changed=true; }
-            if (activeClip < 0 || paused || !playing)
-                return;
-
-            const auto& clip = clips[(size_t) activeClip];
-            if (clip.frames.empty())
-                return;
-
-            const auto elapsedMs = juce::Time::getMillisecondCounter() - startTimeMs;
-            const int wanted = juce::jlimit(0, (int) clip.frames.size() - 1,
-                (int) ((double) elapsedMs * FrameRate / 1000.0));
-
-            if (wanted < (int) clip.frames.size() && wanted != displayedFrame)
+            if (activeClip >= 0 && !paused && playing)
             {
-                const auto& next = clip.frames[(size_t) wanted];
-                if (next.isValid())
-                {
-                    currentImage = next;
-                    displayedFrame = wanted;
-                    changed = true;
+                const auto& clip = clips[(size_t) activeClip];
+                if (!clip.frames.empty()) {
+                    const auto elapsedMs = juce::Time::getMillisecondCounter() - startTimeMs;
+                    const int wanted = juce::jlimit(0, (int) clip.frames.size() - 1,
+                        (int) ((double) elapsedMs * FrameRate / 1000.0));
+                    if (wanted < (int) clip.frames.size() && wanted != displayedFrame) {
+                        const auto& next = clip.frames[(size_t) wanted];
+                        if (next.isValid()) { currentImage = next; displayedFrame = wanted; changed = true; }
+                    }
+                    if (elapsedMs >= (std::uint32_t) (clipDuration * 1000.0)) playing = false;
                 }
             }
-
-            if (elapsedMs >= (std::uint32_t) (clipDuration * 1000.0))
-                playing = false;
         }
         if (changed)
             repaint();
@@ -1406,7 +1439,7 @@ public:
         timeline.changed=[this](int noteIndex){saveMarkers(noteIndex);};
         timeline.seeked=[this](double t){if(outputWindow){outputWindow->seekVideo(t);outputWindow->previewTimelineAudio(t);}};
         timeline.previewStopped=[this]{if(outputWindow)outputWindow->stopTimelineAudio();};
-        timeline.analysisRangeChanged=[this](double a,double b){videoStatus.setText("Zone d’analyse : "+juce::String(a,2)+" à "+juce::String(b,2)+" s. Relance l’analyse automatique.",juce::dontSendNotification);};
+        timeline.analysisRangeChanged=[this](double a,double b){videoStatus.setText("Zone d’analyse sélectionnée : "+juce::String(a,2)+" à "+juce::String(b,2)+" s. La prochaine détection sera limitée à cette plage.",juce::dontSendNotification);};
         inputLabel.setText("Entrée MIDI",juce::dontSendNotification);outputLabel.setText("Sortie MIDI (loopMIDI)",juce::dontSendNotification);
 
         refresh.setButtonText("Actualiser");refresh.onClick=[this]{refreshMidi();};inputBox.onChange=[this]{selectInput();};outputBox.onChange=[this]{selectOutput();};
@@ -1525,7 +1558,7 @@ private:
         const auto analysisRange=timeline.getAnalysisRange();
         if(assignMarkers){autoMarkerButton.setEnabled(false);videoStatus.setText("Analyse des attaques audio en cours...",juce::dontSendNotification);}
         juce::Component::SafePointer<MainView> safe(this);
-        waveformJobs.addJob(new WaveformJob(source,sensitivity,
+        waveformJobs.addJob(new WaveformJob(source,sensitivity,analysisRange.first,analysisRange.second,
             [safe,source,generation,assignMarkers](std::vector<float> peaks,std::vector<double> starts,juce::File audio)mutable{
                 if(!safe||safe->waveformGeneration!=generation)return;
                 bool current=false;{const juce::ScopedLock sl(safe->state->lock);current=(safe->state->file==source);}
@@ -1541,7 +1574,7 @@ private:
     void applyDetectedMarkers()
     {
         int activeNotes=1;{const juce::ScopedLock sl(state->lock);activeNotes=state->octaveCount*PitchCount;}
-        if(detectedOnsets.empty()){videoStatus.setText("Aucune attaque nette détectée. Essaie une sensibilité plus élevée.",juce::dontSendNotification);return;}
+        if(detectedOnsets.empty()){videoStatus.setText("Aucune attaque nette dans la zone sélectionnée. Élargis la plage ou essaie une sensibilité plus élevée.",juce::dontSendNotification);return;}
         const int assigned=juce::jmin(activeNotes,(int)detectedOnsets.size());
         {const juce::ScopedLock sl(state->lock);for(auto& markers:state->markers)markers.clear();for(int i=0;i<assigned;++i)state->markers[(size_t)i].push_back(detectedOnsets[(size_t)i]);}
         if(outputWindow)outputWindow->clearPreparedClips();
