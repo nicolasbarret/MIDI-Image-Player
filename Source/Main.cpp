@@ -1405,7 +1405,8 @@ public:
         noteChoice.onChange=[this]{updatePreloadSelectionText();};
         timeline.changed=[this](int noteIndex){saveMarkers(noteIndex);};
         timeline.seeked=[this](double t){if(outputWindow){outputWindow->seekVideo(t);outputWindow->previewTimelineAudio(t);}};
-        timeline.previewStopped=[this]{if(outputWindow)outputWindow->stopTimelineAudio();};\n        timeline.analysisRangeChanged=[this](double a,double b){videoStatus.setText("Zone d’analyse : "+juce::String(a,2)+" à "+juce::String(b,2)+" s. Relance l’analyse automatique.",juce::dontSendNotification);};
+        timeline.previewStopped=[this]{if(outputWindow)outputWindow->stopTimelineAudio();};
+        timeline.analysisRangeChanged=[this](double a,double b){videoStatus.setText("Zone d’analyse : "+juce::String(a,2)+" à "+juce::String(b,2)+" s. Relance l’analyse automatique.",juce::dontSendNotification);};
         inputLabel.setText("Entrée MIDI",juce::dontSendNotification);outputLabel.setText("Sortie MIDI (loopMIDI)",juce::dontSendNotification);
 
         refresh.setButtonText("Actualiser");refresh.onClick=[this]{refreshMidi();};inputBox.onChange=[this]{selectInput();};outputBox.onChange=[this]{selectOutput();};
@@ -1520,7 +1521,8 @@ private:
         juce::File source;{const juce::ScopedLock sl(state->lock);source=state->file;}
         if(!source.existsAsFile()){videoStatus.setText("Charge une vidéo avant l'analyse audio.",juce::dontSendNotification);return;}
         const int generation=++waveformGeneration;
-        const int sensitivity=juce::jlimit(1,3,detectionSensitivity.getSelectedId());\n        const auto analysisRange=timeline.getAnalysisRange();
+        const int sensitivity=juce::jlimit(1,3,detectionSensitivity.getSelectedId());
+        const auto analysisRange=timeline.getAnalysisRange();
         if(assignMarkers){autoMarkerButton.setEnabled(false);videoStatus.setText("Analyse des attaques audio en cours...",juce::dontSendNotification);}
         juce::Component::SafePointer<MainView> safe(this);
         waveformJobs.addJob(new WaveformJob(source,sensitivity,
