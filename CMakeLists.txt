@@ -9,7 +9,7 @@ FetchContent_Declare(JUCE
   GIT_TAG 8.0.6
   GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(JUCE)
-juce_add_gui_app(MIDIVideoPlayer PRODUCT_NAME "MIDI Video Player" COMPANY_NAME "Nicolas" BUNDLE_ID "fr.nicolas.midivideoplayer")
+juce_add_gui_app(MIDIVideoPlayer PRODUCT_NAME "MIDI Player 2.0" COMPANY_NAME "Nicolas" BUNDLE_ID "fr.nicolas.midivideoplayer")
 juce_generate_juce_header(MIDIVideoPlayer)
 target_sources(MIDIVideoPlayer PRIVATE Source/Main.cpp)
 target_compile_definitions(MIDIVideoPlayer PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
