@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(MIDIVideoPlayer VERSION 2.0.0 LANGUAGES CXX)
+project(MIDIVideoPlayer VERSION 3.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -9,7 +9,7 @@ FetchContent_Declare(JUCE
   GIT_TAG 8.0.6
   GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(JUCE)
-juce_add_gui_app(MIDIVideoPlayer PRODUCT_NAME "MIDI Player 2.0" COMPANY_NAME "Nicolas" BUNDLE_ID "fr.nicolas.midivideoplayer")
+juce_add_gui_app(MIDIVideoPlayer PRODUCT_NAME "MIDI Player 3.0" COMPANY_NAME "Nicolas" BUNDLE_ID "fr.nicolas.midivideoplayer")
 juce_generate_juce_header(MIDIVideoPlayer)
 target_sources(MIDIVideoPlayer PRIVATE Source/Main.cpp)
 target_compile_definitions(MIDIVideoPlayer PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
