@@ -87,7 +87,7 @@ static juce::String markerString(const std::vector<double>& v) {
 static std::vector<double> parseMarkers(const juce::String& s) {
     std::vector<double> v; juce::StringArray a; a.addTokens(s,",",""); a.trim(); a.removeEmptyStrings();
     for(auto& x:a) { double d=x.getDoubleValue(); if(d>=0.0) v.push_back(d); }
-    std::sort(v.begin(),v.end()); if(v.size()>1) v.resize(1); return v;
+    std::sort(v.begin(),v.end()); return v;
 }
 
 class MidiRouter final : private juce::MidiInputCallback {
@@ -146,7 +146,7 @@ public:
     std::function<void(double)> seeked;
     std::function<void()> previewStopped;
     void setDuration(double d){duration=juce::jmax(0.01,d);viewStart=juce::jlimit(0.0,juce::jmax(0.0,d-visibleDuration()),viewStart);repaint();}
-    int requiredHeight() const { int n=1; { const juce::ScopedLock sl(state->lock); n=state->octaveCount*PitchCount; } return 25+n*22+60; }
+    int requiredHeight() const { int n=1; { const juce::ScopedLock sl(state->lock); n=state->octaveCount*PitchCount; } return 25+n*22+118; }
     void refreshHeight(){setSize(getWidth(),requiredHeight());repaint();}
     void setWaveform(std::vector<float> peaks){waveform=std::move(peaks);repaint();}
     void setEraseMode(bool enabled){eraseMode=enabled;setMouseCursor(enabled?juce::MouseCursor::CrosshairCursor:juce::MouseCursor::PointingHandCursor);repaint();}
@@ -155,7 +155,7 @@ public:
         auto r=getLocalBounds().toFloat(); float left=78.0f, right=12.0f, top=25.0f;
         g.setColour(juce::Colour(0xffb8ffad)); g.setFont(ReadableLookAndFeel::uiFont(12.0f));
         g.drawText("Zoom x"+juce::String(zoom,1)+"   |   Molette : zoom   |   Maj + molette : déplacement",48,2,(int)r.getWidth()-60,19,juce::Justification::centredLeft);
-        const float waveH=54.0f;
+        const float waveH=112.0f;
         const float trackArea=r.getHeight()-top-waveH-5.0f;
         int activeNotes=1;
         { const juce::ScopedLock sl(state->lock); activeNotes=state->octaveCount*PitchCount; }
@@ -181,18 +181,21 @@ public:
         g.setColour(juce::Colour(0xff39ff14).withAlpha(0.92f));
         if(!waveform.empty()) {
             const float mid=waveY+(waveH-2.0f)*0.5f;
-            const float half=(waveH-10.0f)*0.5f;
+            const float half=(waveH-18.0f)*0.5f;
             const double first=juce::jlimit(0.0,1.0,viewStart/duration);
             const double last=juce::jlimit(0.0,1.0,(viewStart+visibleDuration())/duration);
-            const size_t begin=(size_t)(first*waveform.size());
-            const size_t finish=juce::jmin(waveform.size(),(size_t)std::ceil(last*waveform.size()));
-            const float dx=(r.getWidth()-left-right)/(float)juce::jmax((size_t)1,finish-begin);
-            for(size_t i=begin;i<finish;++i) {
-                const float x=left+((float)(i-begin)+0.5f)*dx;
-                const float h=juce::jlimit(1.0f,half,waveform[i]*half);
-                g.drawVerticalLine((int)x,mid-h,mid+h);
+            const size_t begin=juce::jmin(waveform.size()-1,(size_t)(first*waveform.size()));
+            const size_t finish=juce::jmax(begin+1,juce::jmin(waveform.size(),(size_t)std::ceil(last*waveform.size())));
+            const int pixels=juce::jmax(1,(int)(r.getWidth()-left-right));
+            for(int px=0;px<pixels;++px) {
+                const size_t a=begin+(size_t)(((juce::int64)px*(finish-begin))/pixels);
+                const size_t b=juce::jmax(a+1,begin+(size_t)(((juce::int64)(px+1)*(finish-begin))/pixels));
+                float peak=0.0f;
+                for(size_t i=a;i<juce::jmin(finish,b);++i) peak=juce::jmax(peak,waveform[i]);
+                const float h=juce::jlimit(1.0f,half,peak*half);
+                g.drawVerticalLine((int)(left+px),mid-h,mid+h);
             }
-        } else {
+        }        } else {
             g.setColour(juce::Colours::white.withAlpha(0.45f));
             g.drawText("Forme d'onde audio en attente", (int)left,(int)waveY,(int)(r.getWidth()-left-right),(int)waveH,juce::Justification::centred);
         }
@@ -202,7 +205,7 @@ public:
     }
     void mouseDown(const juce::MouseEvent& e) override {
         auto r=getLocalBounds().toFloat(); float left=78.0f,right=12.0f,top=25.0f;
-        const float waveH=54.0f;
+        const float waveH=112.0f;
         const float trackArea=r.getHeight()-top-waveH-5.0f;
         int activeNotes=1; { const juce::ScopedLock sl(state->lock); activeNotes=state->octaveCount*PitchCount; }
         float th=trackArea/(float)juce::jmax(1,activeNotes);
@@ -279,61 +282,78 @@ private:
 
 class WaveformJob final : public juce::ThreadPoolJob {
 public:
-    WaveformJob(juce::File f, std::function<void(std::vector<float>, juce::File)> cb)
-        : ThreadPoolJob("Audio waveform and preview audio"), source(std::move(f)), callback(std::move(cb)) {}
+    WaveformJob(juce::File f,int detectionSensitivity,std::function<void(std::vector<float>,std::vector<double>,juce::File)> cb)
+        : ThreadPoolJob("Audio waveform and transient detection"),source(std::move(f)),sensitivity(juce::jlimit(1,3,detectionSensitivity)),callback(std::move(cb)) {}
     JobStatus runJob() override {
-        std::vector<float> peaks(18000, 0.0f);
+        constexpr int WaveformBins=180000,AnalysisSamples=441;
+        std::vector<float> peaks(WaveformBins,0.0f),envelope;
         auto app=juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory();
         auto ffmpeg=app.getChildFile("ffmpeg.exe");
-        auto cache=juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-                       .getChildFile("MIDI Video Player").getChildFile("AudioCache");
+        auto cache=juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("MIDI Video Player").getChildFile("AudioCache");
         cache.createDirectory();
-        const auto key=juce::String::toHexString(source.getFullPathName().hashCode64())+"_"
-                     +juce::String(source.getSize())+"_"
-                     +juce::String(source.getLastModificationTime().toMilliseconds());
+        const auto key=juce::String::toHexString(source.getFullPathName().hashCode64())+"_"+juce::String(source.getSize())+"_"+juce::String(source.getLastModificationTime().toMilliseconds());
         auto wav=cache.getChildFile(key+"_preview_44100_stereo.wav");
-        if(ffmpeg.existsAsFile() && source.existsAsFile() && !wav.existsAsFile()) {
+        if(ffmpeg.existsAsFile()&&source.existsAsFile()&&!wav.existsAsFile()){
             auto partial=cache.getChildFile(key+"_preview.partial.wav");
-            juce::StringArray args; args.add(ffmpeg.getFullPathName()); args.add("-hide_banner");
-            args.add("-loglevel"); args.add("error"); args.add("-y"); args.add("-i"); args.add(source.getFullPathName());
-            args.add("-vn"); args.add("-ac"); args.add("2"); args.add("-ar"); args.add("44100");
-            args.add("-c:a"); args.add("pcm_s16le"); args.add(partial.getFullPathName());
+            juce::StringArray args;args.add(ffmpeg.getFullPathName());args.add("-hide_banner");args.add("-loglevel");args.add("error");args.add("-y");args.add("-i");args.add(source.getFullPathName());
+            args.add("-vn");args.add("-ac");args.add("2");args.add("-ar");args.add("44100");args.add("-c:a");args.add("pcm_s16le");args.add(partial.getFullPathName());
             juce::ChildProcess process;
-            if(process.start(args) && process.waitForProcessToFinish(120000) && partial.existsAsFile() && partial.getSize()>44)
-                partial.moveFileTo(wav);
-            else partial.deleteFile();
+            if(process.start(args)&&process.waitForProcessToFinish(120000)&&partial.existsAsFile()&&partial.getSize()>44)partial.moveFileTo(wav);else partial.deleteFile();
         }
-        if(wav.existsAsFile()) {
-            juce::AudioFormatManager fm; fm.registerBasicFormats();
+        if(wav.existsAsFile()){
+            juce::AudioFormatManager fm;fm.registerBasicFormats();
             std::unique_ptr<juce::AudioFormatReader> reader(fm.createReaderFor(wav));
-            if(reader && reader->lengthInSamples>0) {
+            if(reader&&reader->lengthInSamples>0){
                 const auto total=reader->lengthInSamples;
                 juce::AudioBuffer<float> buffer(juce::jmax(1,(int)reader->numChannels),8192);
-                for(juce::int64 offset=0;offset<total && !shouldExit();offset+=8192) {
+                double windowEnergy=0.0;int windowSamples=0;
+                for(juce::int64 offset=0;offset<total&&!shouldExit();offset+=8192){
                     int count=(int)juce::jmin((juce::int64)8192,total-offset);
-                    if(!reader->read(&buffer,0,count,offset,true,reader->numChannels>1)) break;
-                    for(int i=0;i<count;++i) {
-                        float sample=0.0f;
-                        for(int ch=0;ch<buffer.getNumChannels();++ch) sample+=std::abs(buffer.getSample(ch,i));
-                        sample/=buffer.getNumChannels();
-                        int bin=juce::jmin(17999,(int)(((offset+i)*18000)/total));
-                        peaks[(size_t)bin]=juce::jmax(peaks[(size_t)bin],sample);
+                    if(!reader->read(&buffer,0,count,offset,true,reader->numChannels>1))break;
+                    for(int i=0;i<count;++i){
+                        float sumAbs=0.0f,sumSquares=0.0f;
+                        for(int ch=0;ch<buffer.getNumChannels();++ch){float sample=buffer.getSample(ch,i);sumAbs+=std::abs(sample);sumSquares+=sample*sample;}
+                        sumAbs/=buffer.getNumChannels();sumSquares/=buffer.getNumChannels();
+                        int bin=juce::jmin(WaveformBins-1,(int)(((offset+i)*WaveformBins)/total));
+                        peaks[(size_t)bin]=juce::jmax(peaks[(size_t)bin],sumAbs);
+                        windowEnergy+=sumSquares;
+                        if(++windowSamples>=AnalysisSamples){envelope.push_back((float)std::sqrt(windowEnergy/(double)windowSamples));windowEnergy=0.0;windowSamples=0;}
                     }
                 }
-                float maximum=0.0f; for(float p:peaks) maximum=juce::jmax(maximum,p);
-                if(maximum>0.0001f) for(auto& p:peaks) p/=maximum;
+                if(windowSamples>0)envelope.push_back((float)std::sqrt(windowEnergy/(double)windowSamples));
+                float maximum=0.0f;for(float p:peaks)maximum=juce::jmax(maximum,p);
+                if(maximum>0.0001f)for(auto& p:peaks)p/=maximum;
             }
         }
-        if(callback && !shouldExit()) {
+        std::vector<double> onsets;
+        if(!envelope.empty()){
+            float maximum=0.0f;for(float v:envelope)maximum=juce::jmax(maximum,v);
+            const float relativeFloor=sensitivity==1?0.20f:(sensitivity==2?0.12f:0.065f);
+            const float riseRatio=sensitivity==1?2.8f:(sensitivity==2?2.0f:1.55f);
+            const double minimumGap=sensitivity==1?0.22:(sensitivity==2?0.14:0.085);
+            double lastOnset=-minimumGap;
+            for(size_t i=0;i<envelope.size();++i){
+                float previous=0.0f;size_t lookback=juce::jmin((size_t)4,i);
+                for(size_t j=1;j<=lookback;++j)previous+=envelope[i-j];
+                if(lookback>0)previous/=(float)lookback;
+                float level=envelope[i];double time=(double)i*0.01;
+                float threshold=juce::jmax(maximum*relativeFloor,previous*riseRatio);
+                if(level>=threshold&&level>previous+maximum*0.018f&&time-lastOnset>=minimumGap){
+                    onsets.push_back(time);lastOnset=time;if(onsets.size()>=256)break;
+                }
+            }
+        }
+        if(callback&&!shouldExit()){
             auto cb=std::move(callback);
-            juce::MessageManager::callAsync([cb=std::move(cb), data=std::move(peaks), audio=wav]() mutable {
-                cb(std::move(data), audio.existsAsFile()?audio:juce::File{});
+            juce::MessageManager::callAsync([cb=std::move(cb),data=std::move(peaks),starts=std::move(onsets),audio=wav]()mutable{
+                cb(std::move(data),std::move(starts),audio.existsAsFile()?audio:juce::File{});
             });
         }
         return jobHasFinished;
     }
 private:
-    juce::File source; std::function<void(std::vector<float>, juce::File)> callback;
+    juce::File source;int sensitivity=2;
+    std::function<void(std::vector<float>,std::vector<double>,juce::File)> callback;
 };
 
 struct PreparedClip
@@ -1304,12 +1324,12 @@ public:
         timelineViewport.setViewedComponent(&timeline,false); timeline.refreshHeight(); addAndMakeVisible(timelineViewport); videoStatus.setColour(juce::Label::textColourId,juce::Colour(0xff39ff14));videoStatus.setText("Aucune vidéo chargée",juce::dontSendNotification);
         setLookAndFeel(&readableLookAndFeel);
         addAndMakeVisible(newProject);addAndMakeVisible(openProject);addAndMakeVisible(saveProject);addAndMakeVisible(saveAsProject);
-        addAndMakeVisible(openVideo);addAndMakeVisible(play);addAndMakeVisible(addMarker);addAndMakeVisible(eraseMarker);addAndMakeVisible(noteChoice);addAndMakeVisible(octaveChoice);addAndMakeVisible(clipDurationChoice);addAndMakeVisible(preloadClipButton);addAndMakeVisible(preloadAllButton);addAndMakeVisible(preloadProgressBar);addAndMakeVisible(preloadStatusLabel);addAndMakeVisible(videoStatus);
+        addAndMakeVisible(openVideo);addAndMakeVisible(play);addAndMakeVisible(addMarker);addAndMakeVisible(eraseMarker);addAndMakeVisible(autoMarkerButton);addAndMakeVisible(detectionSensitivity);addAndMakeVisible(noteChoice);addAndMakeVisible(octaveChoice);addAndMakeVisible(clipDurationChoice);addAndMakeVisible(preloadClipButton);addAndMakeVisible(preloadAllButton);addAndMakeVisible(preloadProgressBar);addAndMakeVisible(preloadStatusLabel);addAndMakeVisible(videoStatus);
         newProject.setButtonText("Nouveau projet");newProject.onClick=[this]{newProjectAction();};
         openProject.setButtonText("Ouvrir projet");openProject.onClick=[this]{chooseProjectToOpen();};
         saveProject.setButtonText("Enregistrer");saveProject.onClick=[this]{saveProjectAction();};
         saveAsProject.setButtonText("Enregistrer sous");saveAsProject.onClick=[this]{chooseProjectToSave();};
-        for(auto* b:{&newProject,&openProject,&saveProject,&saveAsProject,&openVideo,&play,&addMarker,&eraseMarker,&refresh,&outputButton,&audioOutputButton,&preloadClipButton,&preloadAllButton}) {
+        for(auto* b:{&newProject,&openProject,&saveProject,&saveAsProject,&openVideo,&play,&addMarker,&eraseMarker,&autoMarkerButton,&refresh,&outputButton,&audioOutputButton,&preloadClipButton,&preloadAllButton}) {
             b->setColour(juce::TextButton::buttonColourId,juce::Colour(0xff101610));
             b->setColour(juce::TextButton::buttonOnColourId,juce::Colour(0xff39ff14).withAlpha(0.22f));
             b->setColour(juce::TextButton::textColourOffId,juce::Colour(0xfff4fff2));
@@ -1332,6 +1352,10 @@ public:
         openVideo.setButtonText("Ouvrir une vidéo");openVideo.onClick=[this]{chooseVideo();};
         play.setButtonText("Lire / Pause");play.onClick=[this]{ensureOutputWindow();if(outputWindow->isVideoPlaying()){outputWindow->pauseVideo();videoStatus.setText("Lecture en pause",juce::dontSendNotification);}else{outputWindow->setVisible(true);outputWindow->toFront(true);auto result=outputWindow->playVideo();videoStatus.setText(result,juce::dontSendNotification);}};
         addMarker.setButtonText("Ajouter un repère à la position");addMarker.onClick=[this]{addCurrentMarker();};
+        autoMarkerButton.setButtonText("Détection automatique");autoMarkerButton.onClick=[this]{startWaveformAnalysis(true);};
+        detectionSensitivity.addItem("Faible",1);detectionSensitivity.addItem("Moyenne",2);detectionSensitivity.addItem("Élevée",3);
+        detectionSensitivity.setSelectedId(settings->getIntValue("detectionSensitivity",2),juce::dontSendNotification);
+        detectionSensitivity.onChange=[this]{settings->setValue("detectionSensitivity",detectionSensitivity.getSelectedId());settings->saveIfNeeded();};
         eraseMarker.setButtonText("Gomme désactivée");eraseMarker.setClickingTogglesState(true);eraseMarker.onClick=[this]{bool on=eraseMarker.getToggleState();eraseMarker.setButtonText(on?"Gomme activée : cliquer un repère":"Gomme désactivée");timeline.setEraseMode(on);};
         rebuildNoteChoice();
         noteChoice.setSelectedId(1,juce::dontSendNotification);
@@ -1367,7 +1391,7 @@ public:
         refresh.setButtonText("Actualiser");refresh.onClick=[this]{refreshMidi();};inputBox.onChange=[this]{selectInput();};outputBox.onChange=[this]{selectOutput();};
         outputButton.setButtonText("Ouvrir la sortie vidéo OBS");outputButton.onClick=[this]{ensureOutputWindow();outputWindow->setVisible(true);outputWindow->toFront(true);};
         audioOutputButton.setButtonText("Configurer la sortie audio");audioOutputButton.onClick=[this]{ensureOutputWindow();outputWindow->configureAudio();};
-        refreshMidi();ensureOutputWindow();setSize(1120,900);
+        refreshMidi();ensureOutputWindow();setSize(1920,1080);
         auto recovery=recoveryProjectFile();
         bool restoredProject = false;
         if(recovery.existsAsFile() && recovery.getSize()>0) {
@@ -1392,7 +1416,7 @@ public:
         g.fillAll(juce::Colour(0xff050705));
         g.setColour(juce::Colour(0xff39ff14));
         g.setFont(ReadableLookAndFeel::uiFont(22.0f, juce::Font::bold));
-        g.drawText("MIDI VIDEO PLAYER",24,12,getWidth()-48,30,juce::Justification::centredLeft);
+        g.drawText("MIDI PLAYER 2.0",24,12,getWidth()-48,30,juce::Justification::centredLeft);
         g.setColour(juce::Colour(0xfff4fff2));
         g.setFont(ReadableLookAndFeel::uiFont(13.0f));
         g.drawText("Départ Do3 | Les notes sont affichées à gauche de chaque piste. Teste un marqueur avant de le précharger.",24,42,getWidth()-48,22,juce::Justification::centredLeft);
@@ -1426,9 +1450,9 @@ public:
         openVideo.setBounds(controls.removeFromTop(36));controls.removeFromTop(8);play.setBounds(controls.removeFromTop(34));controls.removeFromTop(8);
         inputLabel.setBounds(controls.removeFromTop(20));inputBox.setBounds(controls.removeFromTop(28));controls.removeFromTop(5);
         outputLabel.setBounds(controls.removeFromTop(20));outputBox.setBounds(controls.removeFromTop(28));refresh.setBounds(controls.removeFromTop(30));audioOutputButton.setBounds(controls.removeFromTop(44));
-        a.removeFromTop(8);auto timelineHead=a.removeFromTop(32);addMarker.setBounds(timelineHead.removeFromLeft(220));timelineHead.removeFromLeft(8);eraseMarker.setBounds(timelineHead.removeFromLeft(160));timelineHead.removeFromLeft(8);noteChoice.setBounds(timelineHead.removeFromLeft(90));timelineHead.removeFromLeft(6);octaveChoice.setBounds(timelineHead.removeFromLeft(90));timelineHead.removeFromLeft(6);clipDurationChoice.setBounds(timelineHead.removeFromLeft(95));timelineHead.removeFromLeft(8);preloadClipButton.setBounds(timelineHead.removeFromLeft(190));timelineHead.removeFromLeft(6);preloadAllButton.setBounds(timelineHead.removeFromLeft(190));
+        a.removeFromTop(8);auto timelineHead=a.removeFromTop(32);addMarker.setBounds(timelineHead.removeFromLeft(220));timelineHead.removeFromLeft(8);eraseMarker.setBounds(timelineHead.removeFromLeft(160));timelineHead.removeFromLeft(8);autoMarkerButton.setBounds(timelineHead.removeFromLeft(170));timelineHead.removeFromLeft(6);detectionSensitivity.setBounds(timelineHead.removeFromLeft(105));timelineHead.removeFromLeft(8);noteChoice.setBounds(timelineHead.removeFromLeft(90));timelineHead.removeFromLeft(6);octaveChoice.setBounds(timelineHead.removeFromLeft(90));timelineHead.removeFromLeft(6);clipDurationChoice.setBounds(timelineHead.removeFromLeft(95));timelineHead.removeFromLeft(8);preloadClipButton.setBounds(timelineHead.removeFromLeft(190));timelineHead.removeFromLeft(6);preloadAllButton.setBounds(timelineHead.removeFromLeft(190));
         a.removeFromTop(5);auto preloadRow=a.removeFromTop(24);preloadProgressBar.setBounds(preloadRow.removeFromLeft(250));preloadRow.removeFromLeft(10);preloadStatusLabel.setBounds(preloadRow);
-        timelineViewport.setBounds(a.removeFromTop(350));timeline.setSize(timelineViewport.getWidth(),timeline.requiredHeight());a.removeFromTop(8);
+        timelineViewport.setBounds(a.removeFromTop(juce::jmax(240,a.getHeight()-48)));timeline.setSize(timelineViewport.getWidth(),timeline.requiredHeight());a.removeFromTop(8);
         outputButton.setBounds(a.removeFromTop(38).withWidth(250));
     }
 private:
@@ -1471,13 +1495,47 @@ private:
         }
     }
     void chooseVideo(){chooser=std::make_unique<juce::FileChooser>("Choisir une vidéo",juce::File(),"*.mp4;*.mov;*.m4v;*.avi;*.wmv");chooser->launchAsync(juce::FileBrowserComponent::openMode|juce::FileBrowserComponent::canSelectFiles,[this](const juce::FileChooser& c){auto f=c.getResult();if(f.existsAsFile())loadVideo(f);chooser.reset();});}
+    void startWaveformAnalysis(bool assignMarkers)
+    {
+        juce::File source;{const juce::ScopedLock sl(state->lock);source=state->file;}
+        if(!source.existsAsFile()){videoStatus.setText("Charge une vidéo avant l'analyse audio.",juce::dontSendNotification);return;}
+        const int generation=++waveformGeneration;
+        const int sensitivity=juce::jlimit(1,3,detectionSensitivity.getSelectedId());
+        if(assignMarkers){autoMarkerButton.setEnabled(false);videoStatus.setText("Analyse des attaques audio en cours...",juce::dontSendNotification);}
+        juce::Component::SafePointer<MainView> safe(this);
+        waveformJobs.addJob(new WaveformJob(source,sensitivity,
+            [safe,source,generation,assignMarkers](std::vector<float> peaks,std::vector<double> starts,juce::File audio)mutable{
+                if(!safe||safe->waveformGeneration!=generation)return;
+                bool current=false;{const juce::ScopedLock sl(safe->state->lock);current=(safe->state->file==source);}
+                if(!current)return;
+                safe->setWaveformData(std::move(peaks));safe->detectedOnsets=starts;
+                if(audio.existsAsFile()){safe->ensureOutputWindow();if(safe->outputWindow)safe->outputWindow->setTimelineAudioFile(audio);}
+                safe->autoMarkerButton.setEnabled(true);
+                if(assignMarkers)safe->applyDetectedMarkers();
+                else safe->videoStatus.setText("Forme d'onde prête. "+juce::String(starts.size())+" attaques potentielles détectées.",juce::dontSendNotification);
+            }),true);
+    }
+
+    void applyDetectedMarkers()
+    {
+        int activeNotes=1;{const juce::ScopedLock sl(state->lock);activeNotes=state->octaveCount*PitchCount;}
+        if(detectedOnsets.empty()){videoStatus.setText("Aucune attaque nette détectée. Essaie une sensibilité plus élevée.",juce::dontSendNotification);return;}
+        const int assigned=juce::jmin(activeNotes,(int)detectedOnsets.size());
+        {const juce::ScopedLock sl(state->lock);for(auto& markers:state->markers)markers.clear();for(int i=0;i<assigned;++i)state->markers[(size_t)i].push_back(detectedOnsets[(size_t)i]);}
+        if(outputWindow)outputWindow->clearPreparedClips();
+        saveMarkers();timeline.repaint();
+        videoStatus.setText("Détection terminée : "+juce::String(assigned)+" marqueurs attribués de Do3 à "+noteLabel(assigned-1)
+            +(detectedOnsets.size()>(size_t)assigned?" ("+juce::String((int)detectedOnsets.size()-assigned)+" attaques supplémentaires ignorées).":"."),
+            juce::dontSendNotification);
+        setPreloadMessage("Marqueurs automatiques créés. Précharge les notes nécessaires.");
+    }
+
     void loadVideo(const juce::File& f){
         videoStatus.setText("Chargement de : "+f.getFileName(),juce::dontSendNotification);
         if(f.existsAsFile()){
             {const juce::ScopedLock sl(state->lock);state->file=f;state->duration=0.0;state->playhead=0.0;state->pendingTriggers.clear();}
             timeline.setDuration(60.0);timeline.setWaveform({});timeline.repaint();
-            juce::Component::SafePointer<MainView> safe(this);
-            waveformJobs.addJob(new WaveformJob(f,[safe, source=f](std::vector<float> p, juce::File audio){if(safe){bool current=false;{const juce::ScopedLock sl(safe->state->lock);current=(safe->state->file==source);}if(current){safe->setWaveformData(std::move(p));if(audio.existsAsFile()){safe->ensureOutputWindow();if(safe->outputWindow)safe->outputWindow->setTimelineAudioFile(audio);}}}}),true);
+            startWaveformAnalysis(false);
             ensureOutputWindow();
             outputWindow->setVisible(true);outputWindow->toFront(true);
             // Start the source preview immediately so the user can position markers
@@ -1797,6 +1855,8 @@ private:
     double clipDuration = 2.0;
     double preloadProgressValue = 0.0;
     int preloadGeneration = 0;
+    int waveformGeneration=0;
+    std::vector<double> detectedOnsets;
     int preloadNoteIndex = -1;
     std::vector<int> batchPreloadNotes;
     int batchPreloadPosition = 0;
@@ -1805,18 +1865,18 @@ private:
     ReadableLookAndFeel readableLookAndFeel;
     juce::TextButton newProject,openProject,saveProject,saveAsProject;
     juce::File currentProject;bool projectDirty=false;juce::uint32 nextAutoSaveMs=0;std::unique_ptr<juce::PropertiesFile> settings;std::unique_ptr<juce::FileChooser> chooser;std::unique_ptr<OutputWindow> outputWindow;
-    juce::TextButton openVideo,play,addMarker,eraseMarker,refresh,outputButton,audioOutputButton,preloadClipButton,preloadAllButton,localMuteButton,noteReleaseButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
+    juce::TextButton openVideo,play,addMarker,eraseMarker,autoMarkerButton,refresh,outputButton,audioOutputButton,preloadClipButton,preloadAllButton,localMuteButton,noteReleaseButton;juce::ComboBox noteChoice,clipDurationChoice,inputBox,outputBox,octaveChoice,detectionSensitivity;juce::Label inputLabel,outputLabel,videoStatus,preloadStatusLabel;juce::ProgressBar preloadProgressBar{preloadProgressValue};juce::Array<juce::MidiDeviceInfo> ins,outs;
 };
 
 class MainWindow final : public juce::DocumentWindow {
 public:
-    MainWindow():DocumentWindow("MIDI Video Player",juce::Colour(0xff050705),allButtons){setUsingNativeTitleBar(true);setContentOwned(new MainView(),true);setResizable(true,true);centreWithSize(1120,900);}
+    MainWindow():DocumentWindow("MIDI Player 2.0",juce::Colour(0xff050705),allButtons){setUsingNativeTitleBar(true);setContentOwned(new MainView(),true);setResizable(true,true);if(auto* display=juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())setBounds(display->userArea);else centreWithSize(1920,1080);}
     void closeButtonPressed() override {juce::JUCEApplication::getInstance()->systemRequestedQuit();}
 };
 class App final : public juce::JUCEApplication {
 public:
-    const juce::String getApplicationName() override{return "MIDI Video Player";}
-    const juce::String getApplicationVersion() override{return "0.1.0";}
+    const juce::String getApplicationName() override{return "MIDI Player 2.0";}
+    const juce::String getApplicationVersion() override{return "2.0.0";}
     bool moreThanOneInstanceAllowed() override{return false;}
     void initialise(const juce::String&) override {window=std::make_unique<MainWindow>();window->setVisible(true);window->toFront(true);}
     void shutdown() override {window.reset();}
