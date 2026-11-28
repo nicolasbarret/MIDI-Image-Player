@@ -146,6 +146,11 @@ public:
     std::function<void(int)> changed;
     std::function<void(double)> seeked;
     std::function<void()> previewStopped;
+    std::function<void(double,double)> analysisRangeChanged;
+    double analysisStart=0.0, analysisEnd=-1.0;
+    bool selectingAnalysis=false;
+    void setAnalysisRange(double a,double b){analysisStart=juce::jlimit(0.0,duration,a);analysisEnd=juce::jlimit(0.0,duration,b);if(analysisEnd<analysisStart)std::swap(analysisStart,analysisEnd);repaint();}
+    std::pair<double,double> getAnalysisRange() const {return {analysisStart,analysisEnd<0.0?duration:analysisEnd};}
     void setDuration(double d){duration=juce::jmax(0.01,d);viewStart=juce::jlimit(0.0,juce::jmax(0.0,d-visibleDuration()),viewStart);repaint();}
     int requiredHeight() const { int n=1; { const juce::ScopedLock sl(state->lock); n=state->octaveCount*PitchCount; } return 25+n*22+118; }
     void refreshHeight(){setSize(getWidth(),requiredHeight());repaint();}
@@ -1258,7 +1263,7 @@ private:
         }
         for (int note : releases) {
             clipPlayer.releaseNote(note, fadeRelease, fadeDuration);
-            if (clipMode) { if (fadeRelease) audioClipSource.fadeOut(fadeDuration); else audioClipSource.stop(); }
+            if (clipMode) audioClipSource.stop();
         }
 
         // Route MIDI hits through triggerClip(), not directly to ClipFramePlayer.
@@ -1400,7 +1405,7 @@ public:
         noteChoice.onChange=[this]{updatePreloadSelectionText();};
         timeline.changed=[this](int noteIndex){saveMarkers(noteIndex);};
         timeline.seeked=[this](double t){if(outputWindow){outputWindow->seekVideo(t);outputWindow->previewTimelineAudio(t);}};
-        timeline.previewStopped=[this]{if(outputWindow)outputWindow->stopTimelineAudio();};
+        timeline.previewStopped=[this]{if(outputWindow)outputWindow->stopTimelineAudio();};\n        timeline.analysisRangeChanged=[this](double a,double b){videoStatus.setText("Zone d’analyse : "+juce::String(a,2)+" à "+juce::String(b,2)+" s. Relance l’analyse automatique.",juce::dontSendNotification);};
         inputLabel.setText("Entrée MIDI",juce::dontSendNotification);outputLabel.setText("Sortie MIDI (loopMIDI)",juce::dontSendNotification);
 
         refresh.setButtonText("Actualiser");refresh.onClick=[this]{refreshMidi();};inputBox.onChange=[this]{selectInput();};outputBox.onChange=[this]{selectOutput();};
@@ -1515,7 +1520,7 @@ private:
         juce::File source;{const juce::ScopedLock sl(state->lock);source=state->file;}
         if(!source.existsAsFile()){videoStatus.setText("Charge une vidéo avant l'analyse audio.",juce::dontSendNotification);return;}
         const int generation=++waveformGeneration;
-        const int sensitivity=juce::jlimit(1,3,detectionSensitivity.getSelectedId());
+        const int sensitivity=juce::jlimit(1,3,detectionSensitivity.getSelectedId());\n        const auto analysisRange=timeline.getAnalysisRange();
         if(assignMarkers){autoMarkerButton.setEnabled(false);videoStatus.setText("Analyse des attaques audio en cours...",juce::dontSendNotification);}
         juce::Component::SafePointer<MainView> safe(this);
         waveformJobs.addJob(new WaveformJob(source,sensitivity,
