@@ -797,8 +797,8 @@ private:
         if(fx[4] > 0.01f) {
             const int reduction = juce::jlimit(1,8,1+(int)std::round(fx[4]*7.0f));
             auto softened = output.rescaled(juce::jmax(1,width/reduction),juce::jmax(1,height/reduction),
-                                            juce::Graphics::ResamplingQuality::medium);
-            output = softened.rescaled(width,height,juce::Graphics::ResamplingQuality::medium);
+                                            juce::Graphics::mediumResamplingQuality);
+            output = softened.rescaled(width,height,juce::Graphics::mediumResamplingQuality);
         }
         return output;
     }
@@ -1585,7 +1585,7 @@ public:
             effectLearnButtons[(size_t)i].setButtonText(
                 (state->learnEffect==i ? "Tourne un pot..." : "CC "+(cc<0?juce::String("--"):juce::String(cc))
                  +"  |  "+juce::String(percent)+"%"));
-            effectNameLabels[(size_t)i].setText(shortNames[i]+"  "+juce::String(percent)+"%",juce::dontSendNotification);
+            effectNameLabels[(size_t)i].setText(juce::String(shortNames[i])+"  "+juce::String(percent)+"%",juce::dontSendNotification);
         }
     }
 
